@@ -18,8 +18,9 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Archive exact source inputs
-        run: git archive --format=zip --output=source.zip HEAD
+        with:
+          persist-credentials: false
+      - run: git archive --format=zip --output=source.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
           name: source-inputs
@@ -27,9 +28,11 @@ jobs:
           retention-days: 7
   pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -37,38 +40,58 @@ jobs:
           cache-dependency-path: |
             requirements*.txt
             requirements/*.txt
+      - name: Create the same virtual environment as the runbook
+        run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Install dependencies
         run: |
           mkdir -p reports
           python -m pip install --quiet -r requirements-dev.txt -r requirements-browser.txt
           python -m pip check
           python -m dvc dag
-      - name: Install real Chromium browser
+      - name: Install Chromium and Firefox
         run: |
-          python -m playwright install --with-deps chromium > reports/browser-install.log 2>&1 || { tail -100 reports/browser-install.log; exit 1; }
-      - name: Unit and integration tests including MLflow and Streamlit
-        run: python -m pytest -q --junitxml=reports/junit.xml
-      - name: Browser E2E and two real five-minute scheduled Docker deployments
-        run: python scripts/verify_browser_schedule.py
-      - name: Show browser verification summary
-        if: always()
+          python -m playwright install --with-deps chromium firefox > reports/browser-install.log 2>&1 || { tail -100 reports/browser-install.log; exit 1; }
+      - name: Unit and integration tests; no skipped tests permitted
         run: |
-          if [ -f reports/browser/summary.json ]; then
-            cat reports/browser/summary.json
-            echo '## Browser and real scheduler verification' >> "$GITHUB_STEP_SUMMARY"
-            echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            cat reports/browser/summary.json >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          python -m pytest -q --junitxml=reports/junit.xml
+          python -c 'import xml.etree.ElementTree as E; assert all(int(s.get("skipped", "0")) == 0 for s in E.parse("reports/junit.xml").iter("testsuite"))'
+      - name: Verify and deploy the checked-in example when present
+        run: |
+          if [ -f models/example/model.joblib ]; then
+            python scripts/example_model.py verify > reports/example-verification.json
+            python scripts/example_model.py install
+            python -m pmldl.deployment
+            python scripts/verify_browser_schedule.py --existing --evidence-dir reports/browser-example
           fi
-      - name: Show service status and logs
+      - name: Same browser tabs across two real five-minute deployments and MLflow UI
+        run: python scripts/verify_browser_schedule.py
+      - name: Real systemd user service start, crash recovery and stop
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@$(id -u).service"
+          python scripts/verify_service.py
+      - name: Nondefault ports and Compose project with both browsers
+        run: |
+          python pipeline.py down
+          export API_PORT=18000 APP_PORT=18501 COMPOSE_PROJECT_NAME=pmldl-iris-alt
+          python pipeline.py run
+          python scripts/verify_browser_schedule.py --existing --evidence-dir reports/browser-alt
+          python pipeline.py down
+      - name: Export verified model candidate for inclusion in the repository
+        run: python scripts/example_model.py export --directory reports/example-candidate
+      - name: Show verification summaries and service logs
         if: always()
         run: |
-          docker compose -p pmldl-iris -f code/deployment/docker-compose.yml ps -a
-          docker compose -p pmldl-iris -f code/deployment/docker-compose.yml logs --no-color --tail 100
+          find reports -name summary.json -print -exec cat {} \;
+          docker compose -p pmldl-iris -f code/deployment/docker-compose.yml logs --no-color --tail 50 || true
           if [ -f reports/browser/summary.json ] && ! grep -q '"status": "passed"' reports/browser/summary.json; then
             tail -100 reports/browser/scheduler.log
           fi
-      - name: Upload run evidence and browser screenshots
+      - name: Upload actual model, test evidence, screenshots and traces
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -76,10 +99,13 @@ jobs:
           path: |
             reports/
             runs/
+            models/model.joblib
             models/metadata.json
             data/processed/cleaning_report.json
             dvc.lock
           retention-days: 7
-      - name: Clean up CI containers
+      - name: Remove only this job's test containers
         if: always()
-        run: docker compose -p pmldl-iris -f code/deployment/docker-compose.yml down
+        run: |
+          docker compose -p pmldl-iris -f code/deployment/docker-compose.yml down
+          API_PORT=18000 APP_PORT=18501 docker compose -p pmldl-iris-alt -f code/deployment/docker-compose.yml down

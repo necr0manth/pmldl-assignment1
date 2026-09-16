@@ -1,7 +1,12 @@
 data:
   test_size: 0.2
   random_state: 42
-  iqr_multiplier: 1.5
+  # Fixed demo acceptance limits (cm), not statistics fitted before the split.
+  outlier_bounds:
+    sepal_length: [3.0, 9.0]
+    sepal_width: [1.0, 5.0]
+    petal_length: [0.5, 8.0]
+    petal_width: [0.05, 3.0]
 model:
   degree: 2
   C: 1.0

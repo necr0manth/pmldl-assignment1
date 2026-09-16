@@ -13,6 +13,8 @@ htmlcov/
 !/data/processed/.gitkeep
 /models/*
 !/models/.gitkeep
+!/models/example/
+!/models/example/**
 /reports/*
 !/reports/.gitkeep
 /runs/

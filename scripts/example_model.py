@@ -1,0 +1,9 @@
+"""CLI usable from the checkout before editable package installation."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "code"))
+from pmldl.example import main
+
+if __name__ == "__main__":
+    main()

@@ -1,16 +1,16 @@
 # PMLDL Assignment 1 — automated deployment
 
-An end-to-end Iris classifier with **DVC → MLflow → Docker Compose**, a **FastAPI**
-model API and a separate **Streamlit** web application. A local scheduler runs
-**all three stages immediately and every 300 seconds** while it is running.
+An Iris classifier with **DVC → MLflow → Docker Compose**, a **FastAPI** model
+API and a separate **Streamlit** application. The scheduler runs the complete
+pipeline immediately and then every **300 seconds**. No cloud accounts or paid
+services are required.
 
-## Quick start
+## Quick start: the complete assignment
 
-Use Linux, macOS, or **WSL2** on Windows. Prerequisites: Git, Python **3.12**,
-Docker Engine/Desktop, and Docker Compose **v2.20+**. Docker must be running and
-accessible to your user without `sudo`. Internet access is needed for dependency
-installation and initial container builds; the dataset is already in the repository.
-Native Windows is not supported by the scheduler's POSIX file locks.
+Use Linux, macOS, or **WSL2** on Windows, with Git, **Python 3.12**, Docker
+Engine/Desktop and Docker Compose **v2.20+**. Docker must already be running and
+accessible without `sudo`. Native Windows is not supported by POSIX process
+locks. CI verifies Linux; other host platforms are not certified by that run.
 
 ```bash
 git clone https://github.com/necr0manth/pmldl-assignment1.git
@@ -24,256 +24,238 @@ docker compose version
 python pipeline.py schedule --interval 300
 ```
 
-The first run prepares the data, trains and evaluates a new model, builds **two
-images**, starts **two containers**, waits for both health checks and performs a
-real prediction smoke test. Leave the scheduler process running for subsequent
-runs; cloning the repository alone does not start any services.
+Leave the scheduler running. The first cycle cleans/splits the CSV, trains and
+logs a model, builds both Docker images, starts both services, and checks a real
+prediction. Every scheduled cycle repeats **all three stages** with a new model
+run ID; it does not just restart containers or reuse DVC's training cache.
 
 | Service | Address |
 | --- | --- |
-| Web application | http://localhost:8501 |
-| Interactive API documentation | http://localhost:8000/docs |
-| API health and loaded model ID | http://localhost:8000/health |
+| Web app | http://localhost:8501 |
+| Interactive API docs | http://localhost:8000/docs |
+| API health and current model ID | http://localhost:8000/health |
 | Model metadata and metrics | http://localhost:8000/model |
 
-In the application, edit the four measurements and press **Predict**. The app
-calls the API over HTTP, then displays the predicted species and probabilities.
-The default measurements should predict **setosa**. The app does not load or run
-the model itself.
+Enter four measurements and press **Predict**. The app obtains its prediction
+from the separate API, displays the species, all three probabilities and the
+model run ID. Expand **Current model and test metrics** to inspect the model.
+The default input should predict **setosa**. Example inputs for versicolor are
+`6.0, 2.9, 4.5, 1.5`; for virginica, `6.5, 3.0, 5.8, 2.2` (sepal length/width,
+then petal length/width, all in cm).
 
 ## Commands
 
-Run these from the repository root, with the virtual environment activated:
+Run from the repository root with the virtual environment activated:
 
 ```bash
-python pipeline.py run                           # All three stages, once
-python pipeline.py schedule                      # All stages every 5 minutes
-python pipeline.py schedule --interval 600        # Longer interval, if necessary
-python pipeline.py schedule --max-runs 2          # Two complete scheduled attempts
-python pipeline.py status                        # Latest result and log path
-python -m pytest -q                              # Unit and integration tests
-python pipeline.py run --train-only              # Development only: no deployment
+python pipeline.py run                      # Full pipeline once
+python pipeline.py schedule                 # Full pipeline every 5 minutes
+python pipeline.py schedule --max-runs 2     # Two actual scheduled attempts
+python pipeline.py schedule --interval 600  # Longer interval for a slower host
+python pipeline.py status                   # Latest attempt and log path
+python -m pytest -q                         # Unit and integration tests
+python pipeline.py run --train-only         # Development only; omits deployment
 ```
 
-Press **Ctrl+C** to stop the foreground scheduler. The already deployed containers
-remain running. Stop the scheduler first, then remove the containers with:
-
-```bash
-python pipeline.py down
-```
-
-`make run`, `make schedule`, `make test`, `make status`, `make down`, and
-`make mlflow` are equivalent conveniences using `.venv/bin/python`.
-**Training-only mode is not the complete assignment demonstration.**
+Ctrl+C stops the scheduler but leaves the last deployed containers running.
+Stop the scheduler before removing the containers with `python pipeline.py down`.
+The commands `make run`, `make schedule`, `make test`, `make status`, `make down`
+and `make mlflow` are conveniences using `.venv/bin/python`.
 
 ## What each stage does
 
-### 1. Data engineering (`code/pmldl/datasets.py`)
+### 1. Data engineering — `code/pmldl/datasets.py`
 
-Read `data/raw/iris.csv` on every run. Validate the schema and row IDs, convert
-invalid/nonpositive/nonfinite measurements to missing values, remove invalid
-labels and entirely empty observations, and remove duplicate samples.
-Produce a seeded, stratified 80/20 split. Learn 1.5×IQR bounds on the training
-partition, remove its outliers, and impute missing measurements with retained
-training medians. Save `data/processed/train.csv`, `test.csv`, and
-`cleaning_report.json`.
+The order follows the assignment literally: **load → clean → split → save**.
+Read `data/raw/iris.csv`; validate columns and unique row IDs; convert invalid
+measurements to missing values; remove rows with missing measurements or invalid
+labels; remove duplicate observations; remove outliers; only then create a
+seeded, stratified 80/20 train/test split and save the two CSVs plus a cleaning
+report in `data/processed/`.
 
-**Leakage prevention:** statistical cleaning is fitted after a provisional split,
-not on the whole dataset. Valid test outliers are retained rather than discarded
-to make the held-out evaluation easier. This is a deliberate implementation
-choice. The pristine Iris data has no missing values; tests inject them to verify
-imputation. With the checked-in CSV and default parameters, one duplicate and two
-training outliers are removed, leaving **117 training rows and 30 test rows**.
-`row_id` is provenance only and is never a model feature.
+Missing rows are **removed**, not imputed; both are permitted by the assignment.
+Outliers are defined by the explicit per-feature acceptance bounds in
+`params.yaml`: sepal length 3–9, sepal width 1–5, petal length 0.5–8 and petal
+width 0.05–3 cm. These conservative **demo policy limits** are not universal
+botanical claims and are not estimated from the eventual test data. Thus the
+pre-split cleanup does not fit medians, quantiles or a scaler on the whole file.
+Change the bounds for a different data policy, not to optimize holdout accuracy.
 
-### 2. Model engineering (`code/pmldl/training.py`)
+The bundled Iris file has one duplicate, no missing measurements and no outliers
+under these fixed limits: default output is **119 train rows and 30 test rows**.
+The tests inject missing values and extreme outliers and check that neither
+reaches the splitting function. The report records actual removals, including
+zero counts; it does not invent outliers in an already clean dataset.
+`row_id` is provenance, never a model feature.
 
-Read the two saved partitions. Build a scikit-learn `Pipeline` with
-`PolynomialFeatures(degree=2, include_bias=False)` (14 features), `StandardScaler`,
-and `LogisticRegression`. Fit transformations and the classifier only on training
-data; apply the same fitted pipeline to test data and inference inputs.
+### 2. Model engineering — `code/pmldl/training.py`
 
-Log parameters, **accuracy, macro F1, macro precision, macro recall and log loss**,
-the confusion matrix, cleaning report, and a reloadable model to **MLflow**.
-Tracking metadata is stored in `mlflow.db` (SQLite); artifacts are in `mlartifacts/`.
-Package preprocessing and the classifier together in `models/model.joblib` and
-save run/version/hash information in `models/metadata.json`. Evaluation files are
-in `reports/metrics.json` and `reports/evaluation.json`.
+Read the saved partitions. Fit a scikit-learn pipeline of polynomial features
+(degree 2, 14 features), standardization and logistic regression **on train only**.
+Use the same fitted transformations at evaluation and inference.
 
-A local run of the default model produced **accuracy 0.9667**, **macro F1 0.9666**,
-and **log loss 0.1140** on the 30 held-out observations. These are a small demo
-holdout, not a claim about real-world botanical accuracy; repeating the fixed
-split is not independent validation. See [validation notes](docs/VALIDATION.md).
+Log parameters, accuracy, macro F1/precision/recall, log loss, confusion matrix,
+cleaning report and a reloadable model to **MLflow**. SQLite tracking is in
+`mlflow.db`; model artifacts are in `mlartifacts/`. Package the model with its
+preprocessing in `models/model.joblib`; write `models/metadata.json` and
+`reports/metrics.json`/`evaluation.json`. Metadata includes data/parameter/source
+hashes and model dependency versions. The tiny fixed holdout is a demonstration,
+not an independent real-world benchmark.
 
-Open the experiment history in a second terminal:
+In another activated terminal, inspect experiment history with:
 
 ```bash
-source .venv/bin/activate
 mlflow ui --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5000
 ```
 
-Then visit http://localhost:5000 and select `iris-classification`. The MLflow UI
-is optional; training logs directly to SQLite and does not need a running server.
+Open http://localhost:5000 and select `iris-classification`. The UI is optional:
+training writes to SQLite without a running tracking server.
 
-### 3. Deployment (`code/pmldl/deployment.py`)
+### 3. Deployment — `code/pmldl/deployment.py`
 
-Check the packaged model's SHA-256 against its metadata. Build the API and app
-images using the Dockerfiles in `code/deployment/api` and `code/deployment/app`.
-Run `docker compose up --detach --force-recreate --wait` against
-`code/deployment/docker-compose.yml`. The freshly trained model is **copied into
-the API image**, not read from an old host-mounted artifact.
+Verify the model SHA-256, build both images, then recreate services with Compose
+and wait for health checks. The newly trained model is **copied into the API
+image**, not read from a stale host mount. The app talks to `http://api:8000` on
+the internal Docker network. Both containers are non-root with read-only root
+filesystems and writable `/tmp` mounts.
 
-The containers communicate over Compose's internal network (`http://api:8000`).
-Both run as non-root, with read-only root filesystems and writable `/tmp` mounts.
-Health checks gate readiness. The deployment stage checks `/health`, sends a
-real `/predict` request, verifies that the returned model run ID matches the new
-training run, and checks Streamlit health. Its receipt is `reports/deployment.json`.
+Check API readiness, make a real prediction, check its run ID against the new
+model and check Streamlit readiness. Save the receipt in
+`reports/deployment.json`. A failed build leaves the prior containers running;
+a failed recreation is **not automatically rolled back**. Brief downtime and
+loss of an old Streamlit session's unsent inputs are possible. The browser test
+checks that an already open tab can submit a new prediction after redeployment.
+This is a local educational deployment, not a production zero-downtime service.
 
-## Automation and failure behavior
+## Included trained model
 
-The scheduler calls:
+`models/example/` contains a small trained **model.joblib**, matching metadata
+and export provenance. It is a real model snapshot, not a placeholder. Keeping
+it apart from `models/model.joblib` avoids Git-tracked files conflicting with
+DVC's generated outputs. Scheduled training never overwrites the checked-in
+example and never substitutes it for a new training run.
+
+Verify it or deploy it without retraining (a convenience, **not** the complete
+three-stage assignment demonstration):
 
 ```bash
-python -m dvc repro --force --no-run-cache deploy
+python scripts/example_model.py verify
+python scripts/example_model.py install
+python -m pmldl.deployment
 ```
 
-The dependency graph in `dvc.yaml` orders `prepare → train → deploy`. Both force
-flags are intentional: a scheduled run must redo all stages even when the raw
-CSV is unchanged. Each training attempt creates a distinct MLflow run; identical
-predictions on fixed data are expected, but the served **run ID changes**.
-
-The initial run starts immediately. Later starts use 300-second slots. If a run
-exceeds the interval, missed slots are skipped; runs never overlap and do not
-accumulate a catch-up queue. Separate OS locks prevent two scheduler instances
-and simultaneous pipeline runs. Lock files remain on disk, but the OS releases
-the locks when the process exits; do not delete them to bypass an active lock.
-Use `pipeline.py` rather than running DVC manually alongside the scheduler.
-
-Failures stop downstream stages and are recorded in `runs/<id>.log`,
-`runs/<id>.json`, and `runs/latest.json`; the scheduler tries again at the next
-slot. A failed image build leaves existing containers running. **A failed
-container recreation is not automatically rolled back**, and deployment can
-cause brief downtime. This is a local educational deployment, not a production
-blue/green rollout.
-
-The model artifacts, SQLite database, and run logs are generated locally and
-ignored by Git. DVC also generates `dvc.lock` with stage signatures; that file
-must **not** be Git-ignored and can be committed after a successful run. Its
-signatures change when a new model run is packaged. No DVC remote is needed
-because raw data, parameters and source code are committed. This project uses
-DVC for orchestration, not as a remote model registry.
-
-### Persistent scheduling on Linux
-
-Edit the two `/ABSOLUTE/PATH/pmldl-assignment1` placeholders in
-`services/systemd/pmldl-pipeline.service` to your checkout's absolute path. Then:
+Verification checks hashes, schema, dependency versions and reproduced holdout
+metrics before installation. If data, parameters or training sources change,
+regenerate the snapshot instead of silently serving an incompatible artifact.
+After a successful full run, export to a new directory for review:
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp services/systemd/pmldl-pipeline.service ~/.config/systemd/user/
+python scripts/example_model.py export --directory reports/new-example
+```
+
+Only promote those matching files together to `models/example/`. Never load
+untrusted pickle/joblib files. CI verifies and deploys the checked-in snapshot,
+then separately runs the normal retraining pipeline.
+
+## Automation, configuration and persistent operation
+
+The scheduler executes `python -m dvc repro --force --no-run-cache deploy`.
+DVC orders `prepare → train → deploy`. Starts use 300-second slots. When a cycle
+exceeds that interval, missed slots are skipped rather than overlapped. Separate
+OS locks prevent multiple schedulers and concurrent pipeline attempts. Do not
+remove lock files to bypass running processes, or run DVC manually alongside the
+scheduler. Failures are recorded in `runs/<id>.log`, `runs/<id>.json` and
+`runs/latest.json`; the next scheduled attempt retries the complete pipeline.
+
+The generated data, current model, logs and tracking database are Git-ignored.
+`dvc.lock` is intentionally **not** Git-ignored: DVC needs its stage signatures
+Git-visible. No DVC remote is necessary; raw data, code, parameters and the
+separate example model are committed. DVC is used here for orchestration.
+
+### Linux systemd user service
+
+With the project virtual environment activated, the installer fills the actual
+checkout and interpreter paths automatically. It writes the unit; the explicit
+`systemctl` command starts/enables it:
+
+```bash
+python scripts/install_service.py
 systemctl --user daemon-reload
 systemctl --user enable --now pmldl-pipeline.service
 journalctl --user -u pmldl-pipeline.service -f
 ```
 
-This is an alternative to the foreground scheduler, not an additional scheduler.
-To keep a user service running after logout, an administrator may need to enable
-user lingering (`loginctl enable-linger USER`). The machine and Docker daemon
-must remain running. Stop with `systemctl --user stop pmldl-pipeline.service`
-before `python pipeline.py down`.
+Use this **instead of**, not alongside, the foreground scheduler. To keep the
+user manager running after logout and allow startup without an interactive
+login, enable lingering (`sudo loginctl enable-linger "$USER"`) and ensure
+Docker starts on the host. CI exercises a real user service, crash/restart and
+stop, but does not reboot the host or certify your own login/boot setup.
+Stop it with `systemctl --user stop pmldl-pipeline.service` before `pipeline.py down`.
 
-## API example and configuration
-
-```bash
-curl -X POST http://localhost:8000/predict \
-  -H 'Content-Type: application/json' \
-  -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
-```
-
-The response contains `species`, `probabilities` (one probability per class),
-and `model_run_id`. All four input fields are required finite numbers in
-centimetres, greater than 0 and at most 30; extra fields are rejected with HTTP
-422. These API bounds are input validation, not the model's training support.
-
-Change data/model settings in `params.yaml`. To change ports, export `API_PORT`
-and `APP_PORT` **before starting the scheduler**, for example:
+### Ports and security
 
 ```bash
-API_PORT=8001 APP_PORT=8502 python pipeline.py schedule
+API_PORT=18000 APP_PORT=18501 COMPOSE_PROJECT_NAME=pmldl-iris-alt python pipeline.py run
 ```
 
-`BIND_ADDRESS` defaults to `127.0.0.1`, and `COMPOSE_PROJECT_NAME` defaults to
-`pmldl-iris`. Use the same environment when stopping services. Avoid overriding
-these through a Compose-only `.env` file: the host's smoke-test client also needs
-the values. Do not run several checkouts using the same ports/image tags.
+Export the **same** variables when stopping the services. `BIND_ADDRESS` defaults
+to `127.0.0.1`. Use environment variables, not a Compose-only `.env`, so the host
+smoke-test client and Compose see the same settings. Do not run simultaneous
+builds from multiple checkouts sharing image tags. The API requires all four
+finite positive measurements up to 30 cm and rejects extra fields with HTTP 422.
 
-The demo has no authentication or TLS. Keep it on localhost; for a remote server,
-prefer SSH forwarding, e.g. `ssh -L 8501:localhost:8501 user@server`. Treat
-`model.joblib` as trusted executable data: never replace it with an untrusted
-pickle/joblib file. Use the pinned model requirements in both training and API
-images when changing dependencies. Direct dependencies are pinned, but the
-Docker base tag and transitive dependencies are not a full immutable lockfile.
+No authentication or TLS is provided. Keep the app on localhost; for a remote
+server prefer `ssh -L 8501:localhost:8501 user@server`. Direct Python dependencies
+are pinned, but transitive dependencies and the Docker base tag are not a fully
+immutable environment lockfile.
+
+## Verification and submission
+
+See [validation status and limitations](docs/VALIDATION.md) and
+[browser test details](docs/BROWSER_TEST.md). CI installs a fresh Python 3.12 venv,
+checks dependencies and the DVC DAG, runs all tests without allowing skips,
+verifies the included model, exercises actual scheduled Docker deployments in
+Chromium and Firefox without replacing tabs, opens model metrics and MLflow UI,
+stops/restores the real API, tests a real systemd user service and tests alternate
+ports. Logs, screenshots, traces and a verified model candidate are in the
+`pipeline-evidence` Actions artifact. Exact source inputs are archived separately.
+
+A workflow definition is not proof of a passed run: inspect the Actions result
+for your commit. **CI is neither permanent hosting nor your own demonstration.**
+For the TA meeting, run the scheduler on the demonstration machine, make a web
+prediction, show two Docker containers and MLflow experiments, and observe the
+next automatic run and changed model ID. Submit the public repository link.
 
 ## Repository layout
 
 ```text
-code/
-  pmldl/                 # Data, model, API, UI, deployment and scheduler modules
-  deployment/
-    api/Dockerfile
-    app/Dockerfile
-    docker-compose.yml
-data/
-  raw/iris.csv           # Committed input; no runtime data download
-  processed/             # Generated train/test CSVs and cleaning report
-models/                  # Generated model bundle and metadata
-reports/                 # Generated evaluation and deployment evidence
-services/systemd/        # Optional persistent five-minute scheduler
-scripts/export_iris.py   # Recreate the raw CSV from scikit-learn
-requirements/            # Shared model and separate API/UI requirements
-tests/                   # Unit tests, MLflow and Streamlit integration tests
-.github/workflows/ci.yml # Two full Docker deployments on push/PR
-params.yaml
-dvc.yaml
-pipeline.py
+code/pmldl/              # Data, model, API, app, scheduler and service helpers
+code/deployment/         # Separate Dockerfiles and Compose definition
+data/raw/iris.csv       # Committed input, no runtime download
+data/processed/          # Generated cleaned train/test files
+models/example/          # Checked-in trained example and matching provenance
+models/model.joblib      # Generated current model (DVC output, Git-ignored)
+reports/                 # Generated metrics, receipts, browser and service evidence
+scripts/                 # Browser/service checks and snapshot/install CLIs
+services/systemd/        # User-service template, rendered automatically
+tests/                   # Unit and integration tests
+params.yaml              # Cleaning, split and model settings
+dvc.yaml                 # Three-stage dependency graph
+pipeline.py              # Entry point
 ```
 
-A single importable `pmldl` package avoids path/import workarounds across stages.
-Airflow and a `services/airflow` directory are unnecessary because DVC is used.
-
-## Tests and demonstration
-
-The GitHub Actions workflow installs the complete requirements, runs pytest,
-executes the full pipeline twice on a Docker-capable runner, checks that the API
-serves the second model, and uploads logs/reports as `pipeline-evidence`.
-**CI is verification, not the five-minute scheduler or persistent hosting.**
-Check its actual status in the repository's Actions tab; having a workflow file
-alone is not proof that the Docker build passed.
-
-For the TA demonstration, start the scheduler, open the app, make a prediction,
-show the current run ID and metrics, and observe another automatic run after five
-minutes (or a longer configured interval). Show that the UI uses the new model ID,
-that two containers are running, and that MLflow contains distinct runs.
-
-Troubleshooting: `docker info` must work; a Compose `--wait` error means Compose
-needs updating; port conflicts can be resolved with `API_PORT`/`APP_PORT`; a
-missing model means training has not succeeded yet. Inspect `runs/latest.json`
-and the referenced log first. For container logs:
-
-```bash
-docker compose -p pmldl-iris -f code/deployment/docker-compose.yml logs --tail 100
-```
+Alternative logical layouts are allowed by the assignment. Airflow folders are
+not needed because this project uses DVC.
 
 ## Data attribution and references
 
-The CSV is exported from scikit-learn's bundled Iris dataset. Source:
-[Fisher (1936), Iris, UCI Machine Learning Repository](https://doi.org/10.24432/C56C76),
-licensed by UCI under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
-The export adds row IDs, simplifies feature names, and renders class names as
-strings; see [data provenance](data/raw/README.md). No CelebFaces or smoking-status
-data is used.
+The CSV is exported from scikit-learn's bundled Iris dataset; see
+[data provenance](data/raw/README.md). Source: [Fisher (1936), Iris, UCI](https://doi.org/10.24432/C56C76),
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Row IDs and simplified
+column/class names are added. Neither forbidden lab dataset is used.
 
-Implementation references: [DVC repro](https://dvc.org/doc/command-reference/repro),
-[MLflow scikit-learn integration](https://mlflow.org/docs/latest/api_reference/python_api/mlflow.sklearn.html),
-[Docker Compose up](https://docs.docker.com/reference/cli/docker/compose/up/),
-and [Streamlit forms](https://docs.streamlit.io/develop/api-reference/execution-flow/st.form).
+References: [DVC repro](https://dvc.org/doc/command-reference/repro),
+[MLflow](https://mlflow.org/docs/latest/api_reference/python_api/mlflow.sklearn.html),
+[Docker Compose](https://docs.docker.com/reference/cli/docker/compose/up/),
+[Streamlit forms](https://docs.streamlit.io/develop/api-reference/execution-flow/st.form),
+[Playwright](https://playwright.dev/python/docs/ci).

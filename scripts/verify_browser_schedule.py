@@ -1,11 +1,11 @@
-"""Real Chromium -> Streamlit -> FastAPI test over two five-minute scheduled runs.
+"""Real browser tests: same tabs across two 300-second scheduled Docker deployments.
 
-Run in a fresh checkout after installing requirements-dev.txt,
-requirements-browser.txt and `python -m playwright install --with-deps chromium`.
-Docker must be running. No time, network or model mocks are used.
+No accelerated clocks, substituted API responses, or mocked Docker operations.
+Use --existing to test already-running containers (including nondefault ports).
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -20,19 +20,15 @@ from pathlib import Path
 from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "code"))
+from pmldl.deployment import compose_command, service_url
+
 EVIDENCE = ROOT / "reports/browser"
 INTERVAL = 300
-LABELS = {
-    "sepal_length": "Sepal length (cm)",
-    "sepal_width": "Sepal width (cm)",
-    "petal_length": "Petal length (cm)",
-    "petal_width": "Petal width (cm)",
-}
-CASES = [
-    ("setosa", [5.1, 3.5, 1.4, 0.2]),
-    ("versicolor", [6.0, 2.9, 4.5, 1.5]),
-    ("virginica", [6.5, 3.0, 5.8, 2.2]),
-]
+LABELS = {"sepal_length": "Sepal length (cm)", "sepal_width": "Sepal width (cm)",
+          "petal_length": "Petal length (cm)", "petal_width": "Petal width (cm)"}
+CASES = [("setosa", [5.1, 3.5, 1.4, 0.2]), ("versicolor", [6.0, 2.9, 4.5, 1.5]),
+         ("virginica", [6.5, 3.0, 5.8, 2.2])]
 
 
 def read_json(path: Path) -> dict:
@@ -40,26 +36,17 @@ def read_json(path: Path) -> dict:
 
 
 def http_json(url: str, payload: dict | None = None) -> dict:
-    request = urllib.request.Request(
-        url,
-        data=None if payload is None else json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
-    )
+    request = urllib.request.Request(url, data=None if payload is None else json.dumps(payload).encode(),
+                                     headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=15) as response:
         return json.load(response)
 
 
-def compose(*args: str, capture: bool = False) -> str:
-    result = subprocess.run(
-        ["docker", "compose", "-p", "pmldl-iris", "-f",
-         str(ROOT / "code/deployment/docker-compose.yml"), *args],
-        cwd=ROOT, check=True, text=True,
-        stdout=subprocess.PIPE if capture else None,
-    )
-    return result.stdout or ""
+def compose(*args: str) -> None:
+    subprocess.run([*compose_command(ROOT), *args], cwd=ROOT, check=True, timeout=300)
 
 
-def wait_for_run(process: subprocess.Popen, previous_ids: set[str], deadline: float) -> dict:
+def wait_for_run(process, previous_ids: set[str], deadline: float, pages: list) -> dict:
     while time.monotonic() < deadline:
         latest = ROOT / "runs/latest.json"
         if latest.exists():
@@ -70,142 +57,198 @@ def wait_for_run(process: subprocess.Popen, previous_ids: set[str], deadline: fl
                 if record["status"] == "succeeded":
                     return record
         if process.poll() is not None:
-            raise RuntimeError(f"Scheduler exited before completing the run: {process.returncode}")
-        time.sleep(1)
-    raise TimeoutError("Timed out waiting for a real scheduled pipeline run")
+            raise RuntimeError(f"Scheduler exited early: {process.returncode}")
+        # Pump Playwright events while keeping the same browser tabs alive.
+        if pages:
+            pages[0].wait_for_timeout(1000)
+        else:
+            time.sleep(1)
+    raise TimeoutError("Timed out waiting for the real scheduled pipeline")
 
 
-def verify_browser(browser, phase: str, expected_run_id: str) -> dict:
-    context = browser.new_context(viewport={"width": 1280, "height": 1050})
-    context.tracing.start(screenshots=True, snapshots=True, sources=True)
-    page = context.new_page()
-    page_errors: list[str] = []
-    page.on("pageerror", lambda error: page_errors.append(str(error)))
+def check_predictions(page, phase: str, metadata: dict, api: str) -> dict:
+    run_id = metadata["run_id"]
+    expect(page.get_by_role("heading", name="Iris classifier", exact=True)).to_be_visible(timeout=90000)
+    expect(page.get_by_role("spinbutton")).to_have_count(4)
+    button = page.get_by_role("button", name="Predict", exact=True)
+    expect(button).to_be_enabled(timeout=90000)
     results = []
+    for species, measurements in CASES:
+        payload = dict(zip(LABELS, measurements, strict=True))
+        reference = http_json(api + "/predict", payload)
+        if reference["species"] != species or reference["model_run_id"] != run_id:
+            raise AssertionError(f"Unexpected reference prediction: {reference}")
+        for feature, label in LABELS.items():
+            field = page.get_by_role("spinbutton", name=label, exact=True)
+            field.fill(str(payload[feature]))
+            field.press("Tab")
+        button.click()
+        expect(page.get_by_text(f"Predicted species: {species}", exact=True)).to_be_visible(timeout=30000)
+        expect(page.get_by_text(f"Model run: {run_id}", exact=True)).to_be_visible(timeout=30000)
+        expect(page.get_by_test_id("stProgress")).to_have_count(3)
+        rendered = {}
+        for name, probability in reference["probabilities"].items():
+            label = f"{name}: {probability:.2%}"
+            element = page.get_by_text(label, exact=True)
+            expect(element).to_be_visible(timeout=15000)
+            rendered[name] = element.inner_text()
+        expect(page.get_by_test_id("stException")).to_have_count(0)
+        results.append({"inputs": payload, **reference, "rendered_probabilities": rendered})
+        page.screenshot(path=str(EVIDENCE / f"{phase}-{species}.png"), full_page=True)
+    details = page.get_by_test_id("stExpander").locator("details")
+    if not details.evaluate("element => element.open"):
+        details.locator("summary").click()
+    block = page.get_by_test_id("stJson")
+    expect(block).to_be_visible()
+    expect(block).to_contain_text(run_id)
+    for metric in metadata["metrics"]:
+        expect(block).to_contain_text(metric)
+    page.screenshot(path=str(EVIDENCE / f"{phase}-metrics.png"), full_page=True)
+    print(f"BROWSER_OK {phase}: three real submissions, probabilities, model ID and metrics", flush=True)
+    return {"phase": phase, "model_run_id": run_id, "predictions": results, "metrics_panel": True}
+
+
+def check_outage(pages: list, expected_run_id: str) -> dict:
     try:
-        page.goto("http://127.0.0.1:8501", wait_until="domcontentloaded", timeout=60000)
-        expect(page.get_by_role("heading", name="Iris classifier", exact=True)).to_be_visible(timeout=30000)
-        expect(page.get_by_role("spinbutton")).to_have_count(4)
-        expect(page.get_by_role("button", name="Predict", exact=True)).to_be_visible()
-        for species, measurements in CASES:
-            payload = dict(zip(LABELS, measurements, strict=True))
-            reference = http_json("http://127.0.0.1:8000/predict", payload)
-            if reference["species"] != species or reference["model_run_id"] != expected_run_id:
-                raise AssertionError(f"Unexpected API prediction: {reference}")
-            for feature, label in LABELS.items():
-                field = page.get_by_role("spinbutton", name=label, exact=True)
-                field.fill(str(payload[feature]))
-                field.press("Tab")
+        compose("stop", "api")
+        for name, page in pages:
             page.get_by_role("button", name="Predict", exact=True).click()
-            expect(page.get_by_text(f"Predicted species: {species}", exact=True)).to_be_visible(timeout=30000)
-            expect(page.get_by_text(f"Model run: {expected_run_id}", exact=True)).to_be_visible(timeout=30000)
-            # Assert actual rendered numbers, not just the presence of a chart.
-            rendered_probabilities = {}
-            expect(page.get_by_test_id("stProgress")).to_have_count(3)
-            for class_name, probability in reference["probabilities"].items():
-                label = f"{class_name}: {probability:.2%}"
-                displayed = page.get_by_text(label, exact=True)
-                expect(displayed).to_be_visible(timeout=15000)
-                rendered_probabilities[class_name] = displayed.inner_text()
-            expect(page.get_by_test_id("stException")).to_have_count(0)
-            page.screenshot(path=str(EVIDENCE / f"{phase}-{species}.png"), full_page=True)
-            results.append({"inputs": payload, "species": species,
-                            "model_run_id": expected_run_id, "api_probabilities": reference["probabilities"],
-                            "rendered_probabilities": rendered_probabilities})
-        if page_errors:
-            raise AssertionError(f"Browser JavaScript errors: {page_errors}")
-        print(f"BROWSER_OK {phase}: three form submissions and all displayed probability values; model={expected_run_id}", flush=True)
-        return {"phase": phase, "model_run_id": expected_run_id, "predictions": results,
-                "browser_version": browser.version, "javascript_errors": page_errors}
-    except BaseException:
-        page.screenshot(path=str(EVIDENCE / f"{phase}-failure.png"), full_page=True)
-        (EVIDENCE / f"{phase}-failure.html").write_text(page.content(), encoding="utf-8")
-        raise
+            expect(page.get_by_text(re.compile("Prediction failed\\."))).to_be_visible(timeout=30000)
+            expect(page.get_by_text(re.compile("^Predicted species:"))).to_have_count(0)
+            expect(page.get_by_test_id("stProgress")).to_have_count(0)
+            page.screenshot(path=str(EVIDENCE / f"{name}-api-stopped.png"), full_page=True)
     finally:
-        context.tracing.stop(path=str(EVIDENCE / f"{phase}-trace.zip"))
-        context.close()
+        compose("up", "-d", "--wait", "--wait-timeout", "120", "api")
+    for name, page in pages:
+        page.get_by_role("button", name="Predict", exact=True).click()
+        expect(page.get_by_text("Predicted species: virginica", exact=True)).to_be_visible(timeout=30000)
+        expect(page.get_by_text(f"Model run: {expected_run_id}", exact=True)).to_be_visible()
+        page.screenshot(path=str(EVIDENCE / f"{name}-api-restored.png"), full_page=True)
+    return {"real_api_stop": True, "stale_results_removed": True, "recovered": True}
 
 
-def verify_api_failure(browser) -> dict:
-    """Prove the running frontend depends on the real API, not a mocked response."""
-    context = browser.new_context(viewport={"width": 1280, "height": 1050})
+def check_mlflow(browser, metadata: dict) -> dict:
+    from mlflow.tracking import MlflowClient
+    uri = "sqlite:///" + (ROOT / "mlflow.db").as_posix()
+    client = MlflowClient(tracking_uri=uri)
+    run = client.get_run(metadata["run_id"])
+    process = None
+    context = browser.new_context()
     page = context.new_page()
     try:
-        page.goto("http://127.0.0.1:8501", wait_until="domcontentloaded")
-        button = page.get_by_role("button", name="Predict", exact=True)
-        expect(button).to_be_visible(timeout=30000)
-        button.click()
-        expect(page.get_by_text("Predicted species: setosa", exact=True)).to_be_visible(timeout=30000)
-        compose("stop", "api")
-        button.click()
-        expect(page.get_by_text(re.compile("Prediction failed\\."))).to_be_visible(timeout=30000)
-        expect(page.get_by_text(re.compile("^Predicted species:"))).to_have_count(0)
-        expect(page.get_by_test_id("stProgress")).to_have_count(0)
-        page.screenshot(path=str(EVIDENCE / "api-stopped-error.png"), full_page=True)
-        compose("up", "-d", "--wait", "--wait-timeout", "120", "api")
-        button.click()
-        expect(page.get_by_text("Predicted species: setosa", exact=True)).to_be_visible(timeout=30000)
-        page.screenshot(path=str(EVIDENCE / "api-restored.png"), full_page=True)
-        print("BROWSER_OK real API stopped: error displayed, stale prediction removed; recovery succeeded", flush=True)
-        return {"real_api_stop": True, "error_displayed": True, "stale_prediction_removed": True, "recovered": True}
+        with (EVIDENCE / "mlflow-server.log").open("w") as log:
+            process = subprocess.Popen([sys.executable, "-m", "mlflow", "ui", "--backend-store-uri", uri,
+                                        "--host", "127.0.0.1", "--port", "5000"],
+                                       cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            deadline = time.monotonic() + 90
+            while True:
+                try:
+                    with urllib.request.urlopen("http://127.0.0.1:5000/health", timeout=2) as response:
+                        if response.status == 200:
+                            break
+                except OSError:
+                    if time.monotonic() > deadline or process.poll() is not None:
+                        raise RuntimeError("MLflow UI did not start; inspect mlflow-server.log")
+                    time.sleep(1)
+            page.goto(f"http://127.0.0.1:5000/#/experiments/{run.info.experiment_id}/runs/{run.info.run_id}",
+                      wait_until="domcontentloaded", timeout=60000)
+            expect(page.get_by_text("accuracy", exact=True).first).to_be_visible(timeout=60000)
+            expect(page.get_by_text("f1_macro", exact=True).first).to_be_visible(timeout=30000)
+            expect(page.locator("body")).to_contain_text(run.info.run_name)
+            page.screenshot(path=str(EVIDENCE / "mlflow-run.png"), full_page=True)
+            return {"run_id": run.info.run_id, "run_name": run.info.run_name, "metrics_visible": True}
     except BaseException:
-        page.screenshot(path=str(EVIDENCE / "api-failure-test-failed.png"), full_page=True)
+        page.screenshot(path=str(EVIDENCE / "mlflow-failure.png"), full_page=True)
+        (EVIDENCE / "mlflow-failure.html").write_text(page.content())
         raise
     finally:
         context.close()
+        if process is not None and process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=10)
 
 
 def main() -> None:
+    global EVIDENCE
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--existing", action="store_true")
+    parser.add_argument("--browsers", nargs="+", choices=("chromium", "firefox"), default=["chromium", "firefox"])
+    parser.add_argument("--evidence-dir", type=Path, default=EVIDENCE)
+    args = parser.parse_args()
+    EVIDENCE = args.evidence_dir.resolve()
     EVIDENCE.mkdir(parents=True, exist_ok=True)
-    # Isolate this smoke test from optional user overrides; the actual pipeline is unchanged.
-    for name in ("BIND_ADDRESS", "API_PORT", "APP_PORT", "COMPOSE_PROJECT_NAME"):
-        if name in os.environ:
-            raise RuntimeError(f"Unset {name} before running this localhost CI smoke test")
-    previous_ids = {path.stem for path in (ROOT / "runs").glob("*.json") if path.stem != "latest"}
-    evidence = {"status": "running", "interval_seconds": INTERVAL,
-                "commit": os.environ.get("GITHUB_SHA"), "runs": [], "browser_checks": []}
+    api, app = service_url("API_PORT", "8000"), service_url("APP_PORT", "8501")
+    evidence = {"status": "running", "commit": os.environ.get("GITHUB_SHA"), "api": api, "app": app,
+                "runs": [], "browser_checks": [], "interval_seconds": None if args.existing else INTERVAL}
     process = None
+    handles = []
+    previous = {path.stem for path in (ROOT / "runs").glob("*.json") if path.stem != "latest"}
     try:
-        with (EVIDENCE / "scheduler.log").open("w", encoding="utf-8") as log:
-            process = subprocess.Popen(
-                [sys.executable, "pipeline.py", "schedule", "--interval", str(INTERVAL), "--max-runs", "2"],
-                cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-            )
-            deadline = time.monotonic() + 1200
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
-                try:
-                    for phase in ("first", "second"):
-                        record = wait_for_run(process, previous_ids, deadline)
-                        previous_ids.add(record["run_id"])
-                        metadata = read_json(ROOT / "models/metadata.json")
+        with (EVIDENCE / "scheduler.log").open("w") as log, sync_playwright() as playwright:
+            if not args.existing:
+                process = subprocess.Popen([sys.executable, "pipeline.py", "schedule", "--interval", str(INTERVAL),
+                                            "--max-runs", "2"], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+            try:
+                for name in args.browsers:
+                    browser = getattr(playwright, name).launch(headless=True)
+                    context = browser.new_context(viewport={"width": 1280, "height": 1050})
+                    context.tracing.start(screenshots=True, snapshots=True, sources=True)
+                    page = context.new_page()
+                    errors = []
+                    page.on("pageerror", lambda error, errors=errors: errors.append(str(error)))
+                    handles.append((name, browser, context, page, errors))
+                for phase in (("existing",) if args.existing else ("first", "second")):
+                    if process is not None:
+                        record = wait_for_run(process, previous, time.monotonic() + 1200,
+                                              [h[3] for h in handles])
+                        previous.add(record["run_id"])
+                    metadata = read_json(ROOT / "models/metadata.json")
+                    if http_json(api + "/health")["model_run_id"] != metadata["run_id"]:
+                        raise AssertionError("API serves a stale model")
+                    if process is not None:
                         receipt = read_json(ROOT / "reports/deployment.json")
                         if receipt["status"] != "deployed" or receipt["model_run_id"] != metadata["run_id"]:
-                            raise AssertionError("Deployment receipt does not match the newly trained model")
-                        health = http_json("http://127.0.0.1:8000/health")
-                        if health["model_run_id"] != metadata["run_id"]:
-                            raise AssertionError("API health exposes a stale model")
-                        record["model_run_id"] = metadata["run_id"]
-                        evidence["runs"].append(record)
-                        # Preserve both receipts: DVC overwrites the latest report on the next run.
+                            raise AssertionError("Deployment receipt is stale")
+                        evidence["runs"].append({**record, "model_run_id": metadata["run_id"]})
                         for name, value in (("metadata", metadata), ("deployment", receipt)):
-                            (EVIDENCE / f"{phase}-{name}.json").write_text(json.dumps(value, indent=2) + "\n")
-                        print(f"SCHEDULE_OK {phase}: {record['started_at']} -> {record['finished_at']}; model={metadata['run_id']}", flush=True)
-                        evidence["browser_checks"].append(verify_browser(browser, phase, metadata["run_id"]))
+                            (EVIDENCE / f"{phase}-{name}.json").write_text(json.dumps(value, indent=2))
+                    for name, browser, context, page, errors in handles:
+                        if phase != "second":
+                            page.goto(app, wait_until="domcontentloaded", timeout=60000)
+                        # No navigation/reload/replacement on second: old tabs must reconnect.
+                        check = check_predictions(page, f"{name}-{phase}", metadata, api)
+                        if errors:
+                            raise AssertionError(f"{name} JavaScript errors: {errors}")
+                        evidence["browser_checks"].append({**check, "browser_version": browser.version,
+                                                          "same_tab_after_redeploy": phase == "second",
+                                                          "javascript_errors": errors.copy()})
+                if process is not None:
                     process.wait(timeout=30)
-                    if process.returncode != 0:
+                    if process.returncode:
                         raise RuntimeError(f"Scheduler exited with {process.returncode}")
                     first, second = evidence["runs"]
                     if first["model_run_id"] == second["model_run_id"]:
-                        raise AssertionError("The second automatic run did not create a new model")
+                        raise AssertionError("Model was not retrained")
                     gap = (datetime.fromisoformat(second["started_at"]) - datetime.fromisoformat(first["started_at"])).total_seconds()
                     if first["duration_seconds"] >= INTERVAL or not 295 <= gap <= 330:
-                        raise AssertionError(f"Expected two real 300-second slots, observed start gap {gap}")
+                        raise AssertionError(f"Expected 300-second start spacing, got {gap}")
                     evidence["observed_start_gap_seconds"] = gap
-                    evidence["api_failure_check"] = verify_api_failure(browser)
-                    evidence["status"] = "passed"
-                    print(f"E2E_PASSED: two scheduled Docker deployments; real start gap={gap:.3f}s; six browser predictions; API failure/recovery checked", flush=True)
-                finally:
+                    evidence["api_failure_check"] = check_outage([(h[0], h[3]) for h in handles], metadata["run_id"])
+                    evidence["mlflow_ui"] = check_mlflow(handles[0][1], metadata)
+                evidence["status"] = "passed"
+            except BaseException:
+                for name, browser, context, page, errors in handles:
+                    page.screenshot(path=str(EVIDENCE / f"{name}-failure.png"), full_page=True)
+                    (EVIDENCE / f"{name}-failure.html").write_text(page.content())
+                raise
+            finally:
+                for name, browser, context, page, errors in handles:
+                    context.tracing.stop(path=str(EVIDENCE / f"{name}-trace.zip"))
+                    context.close()
                     browser.close()
     except BaseException as error:
         evidence.update(status="failed", error=f"{type(error).__name__}: {error}")
@@ -218,7 +261,8 @@ def main() -> None:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=10)
-        (EVIDENCE / "summary.json").write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+        (EVIDENCE / "summary.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    print(json.dumps(evidence, indent=2))
 
 
 if __name__ == "__main__":

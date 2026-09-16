@@ -95,6 +95,10 @@ def train_and_package(root: Path = ROOT) -> dict:
         )
         metadata = {
             "run_id": run.info.run_id, "trained_at": utc_now(),
+            "raw_sha256": sha256(root / "data/raw/iris.csv"),
+            "params_sha256": sha256(root / "params.yaml"),
+            "source_hashes": {name: sha256(Path(__file__).with_name(name))
+                              for name in ("datasets.py", "training.py")},
             "features": FEATURES, "classes": list(model.classes_),
             "metrics": metrics, "mlflow_model_uri": logged.model_uri,
             "train_sha256": sha256(root / "data/processed/train.csv"),

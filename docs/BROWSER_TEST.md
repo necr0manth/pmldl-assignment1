@@ -1,58 +1,52 @@
-# Real browser and five-minute scheduler verification
+# Real browser and service verification
 
-`python scripts/verify_browser_schedule.py` starts the actual scheduler with
-`--interval 300 --max-runs 2`. There are no mock timers or substituted API calls.
-The scheduler performs both complete DVC graphs, including rebuilding and
-recreating the two Docker services, before exiting.
+The workflow runs `scripts/verify_browser_schedule.py` against real Docker
+services. It starts the actual scheduler for two 300-second slots. It does not
+accelerate time or substitute the application, model or HTTP calls.
 
-Chromium, controlled with Playwright, opens the real Streamlit page, fills all
-four fields, presses **Predict**, and checks the rendered species, probability
-bars, every numeric probability and model run ID. It does this for setosa, versicolor and virginica both
-before and after the second automatic deployment. Direct API calls provide a
-reference; they do not replace the form submissions. The start-to-start interval
-and a changed model ID are checked separately. The test then stops the real API
-container, checks that the form displays an error without a stale prediction,
-and starts the API again to check recovery.
+Chromium and Firefox open the real Streamlit form, change four input fields,
+click Predict, and check the displayed species, all three probability labels,
+model run ID and expanded metrics panel. The SAME pages stay open through the
+second training and recreation of both containers. There is deliberately no
+`goto`, reload or new page for that second check: it tests reconnection of an
+existing tab. The new run ID must be observed after a real form submission.
 
-## Run locally
+After both cycles the test stops the API, checks that both browser sessions
+remove old results and show an error, starts the API, and confirms recovery.
+It then starts an actual MLflow UI and opens a logged run, checking the run name
+and visible metric keys. Screenshots and traces are retained even on failure.
 
-Use a fresh checkout and the same Python 3.12 / Docker prerequisites as the README.
-Do not run another scheduler or use the project's ports while this test runs.
-The script uses the default localhost ports and rejects port/project overrides.
+## Commands
 
 ```bash
 python -m pip install -r requirements-dev.txt -r requirements-browser.txt
-python -m playwright install --with-deps chromium
+python -m playwright install --with-deps chromium firefox
 python scripts/verify_browser_schedule.py
 ```
 
-This is a real-time test; it does **not** accelerate the five-minute interval.
-The local script leaves the containers running. Stop them with `python pipeline.py down`.
-The GitHub Actions workflow stops its test containers in its final cleanup step.
+Do not run another scheduler during the test. The local test leaves deployed
+containers running; `python pipeline.py down` stops them. CI cleans up its own
+containers. Use an existing deployment, including exported port variables, with:
 
-## Evidence
+```bash
+python scripts/verify_browser_schedule.py --existing --evidence-dir reports/browser-existing
+```
 
-The `pipeline-evidence` workflow artifact contains `reports/browser/`:
+`scripts/verify_service.py` is a separate real systemd user-manager test intended
+for a disposable Linux runner; it installs and removes a dedicated test unit.
+It checks startup, automatic restart following SIGKILL and graceful stop, but
+not host reboot or actual logout. Do not confuse it with the normal installer
+`python scripts/install_service.py` used to run the project persistently.
 
-- `summary.json`: run IDs, real start times, assertions and prediction inputs.
-- `first-*.png` and `second-*.png`: screenshots after each form submission.
-- `first-trace.zip` and `second-trace.zip`: Playwright traces.
-- `api-stopped-error.png` and `api-restored.png`: actual API outage and recovery.
-- The scheduler log and copies of metadata/deployment receipts from both cycles.
+## Reports
 
-Open a trace using `python -m playwright show-trace reports/browser/first-trace.zip`.
-A failed test also captures the failing page when possible. Check the workflow's
-actual conclusion and `summary.json`; this document describes the test, and is
-not itself proof that it passed. The test does not change the data-cleaning
-policy or certify the TA's interpretation of that policy.
+The Actions artifact `pipeline-evidence` contains JSON summaries, screenshots,
+traces, a systemd journal, scheduler logs and matching trained-model files.
+See [validation notes](VALIDATION.md) for exact paths and limitations. Open a
+trace with `python -m playwright show-trace reports/browser/chromium-trace.zip`.
+
+Earlier browser testing found Vega chart-update errors and stale bars; native
+Streamlit progress bars and explicitly checked percentages replaced that plot.
+A check that merely sees a chart container is not sufficient.
 
 Reference: https://playwright.dev/python/docs/ci
-
-## Regression found by visual review
-
-The initial browser test found Vega JavaScript errors on repeated predictions.
-A named-dataset change removed those errors, but screenshot review still found
-stale bars. The application now uses native Streamlit probability bars with
-explicit percentages. The browser test checks every displayed percentage against
-the real API response after every click, in addition to the predicted class and
-model ID. A green test that checks only for a chart container is not sufficient.

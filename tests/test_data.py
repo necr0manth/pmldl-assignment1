@@ -2,8 +2,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from pmldl import datasets
 from pmldl.common import CLASSES, FEATURES
-from pmldl.datasets import clean_partitions, prepare
+from pmldl.datasets import DEFAULT_BOUNDS, clean_data, prepare, validate_bounds
 
 
 def test_preparation_is_deterministic_and_disjoint(project):
@@ -18,30 +19,51 @@ def test_preparation_is_deterministic_and_disjoint(project):
     assert set(train.species) == set(test.species) == set(CLASSES)
     assert not train.isna().any().any() and not test.isna().any().any()
     assert report["duplicates_removed"] == 1
-    assert report["train_outliers_removed"] == 2
-    assert len(train) == 117 and len(test) == 30
+    # The original Iris file has no incomplete rows or fixed-bound outliers.
+    # Tests below insert both; never fabricate removals to make a report look busy.
+    assert report["outliers_removed"] == report["missing_rows_removed"] == 0
+    assert len(train) == 119 and len(test) == 30
     assert not pd.concat([train, test]).duplicated(subset=[*FEATURES, "species"]).any()
 
 
-def test_imputation_and_outliers_use_training_statistics_only():
-    train = pd.DataFrame({feature: [1., 2., 3., 4., 5., 6., 7., 8., 9., 1000.] for feature in FEATURES})
-    train["row_id"] = range(10)
-    train.loc[0, "petal_width"] = np.nan
-    test = pd.DataFrame({feature: [2000., np.nan] for feature in FEATURES})
-    test["row_id"] = [10, 11]
-    cleaned, held_out, report = clean_partitions(train, test, 1.5)
-    assert report["removed_train_row_ids"] == [9]
-    assert report["train_values_imputed"] == 1
-    assert report["test_values_imputed"] == 4
-    assert report["test_outliers_retained"] == 1
-    assert held_out.iloc[0].sepal_length == 2000  # Do not cherry-pick test examples.
-    assert cleaned.loc[0, "petal_width"] == 5.5
-    assert held_out.loc[1, "sepal_length"] == 5
-    changed_test = test.copy()
-    changed_test[FEATURES] = 1000000.
-    again, _, another_report = clean_partitions(train, changed_test, 1.5)
-    pd.testing.assert_frame_equal(cleaned, again)
-    assert report["training_medians"] == another_report["training_medians"]
+def test_all_cleaning_happens_before_split(project, monkeypatch):
+    path = project / "data/raw/iris.csv"
+    raw = pd.read_csv(path)
+    raw.loc[0, "petal_width"] = np.nan
+    raw.loc[1, "sepal_length"] = 1000
+    bad_ids = set(raw.loc[[0, 1], "row_id"])
+    raw.to_csv(path, index=False)
+    original_split = datasets.train_test_split
+    def split(cleaned, **kwargs):
+        assert not cleaned[FEATURES].isna().any().any()
+        assert not bad_ids.intersection(cleaned.row_id)
+        for feature, (low, high) in DEFAULT_BOUNDS.items():
+            assert cleaned[feature].between(low, high).all()
+        return original_split(cleaned, **kwargs)
+    monkeypatch.setattr(datasets, "train_test_split", split)
+    report = prepare(path, project / "data/processed")
+    assert report["missing_rows_removed"] == report["outliers_removed"] == 1
+
+
+def test_cleaning_thresholds_do_not_depend_on_other_rows(project):
+    raw = pd.read_csv(project / "data/raw/iris.csv")
+    first, _ = clean_data(raw)
+    extra = raw.iloc[:3].copy()
+    extra["row_id"] = [1001, 1002, 1003]
+    extra["sepal_length"] = 1000000
+    second, report = clean_data(pd.concat([raw, extra], ignore_index=True))
+    pd.testing.assert_frame_equal(first.reset_index(drop=True), second.reset_index(drop=True))
+    assert report["outliers_removed"] == 3
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf, 0, -1, "not a number"])
+def test_incomplete_invalid_measurements_are_removed(project, bad):
+    raw = pd.read_csv(project / "data/raw/iris.csv")
+    raw["sepal_length"] = raw["sepal_length"].astype(object)
+    raw.loc[0, "sepal_length"] = bad
+    cleaned, report = clean_data(raw)
+    assert raw.loc[0, "row_id"] not in set(cleaned.row_id)
+    assert report["missing_rows_removed"] == 1
 
 
 @pytest.mark.parametrize("kind", ["missing_column", "duplicate_id", "no_classes"])
@@ -59,16 +81,12 @@ def test_invalid_raw_data_fails_clearly(project, kind):
         prepare(path, project / "data/processed")
 
 
-def test_missing_values_in_input_are_imputed(project):
-    path = project / "data/raw/iris.csv"
-    raw = pd.read_csv(path)
-    raw.loc[0, "sepal_length"] = np.nan
-    raw.to_csv(path, index=False)
-    report = prepare(path, project / "data/processed")
-    assert report["train_values_imputed"] + report["test_values_imputed"] == 1
-
-
-@pytest.mark.parametrize("multiplier", [0, -1, float("nan"), float("inf")])
-def test_invalid_outlier_parameters(partitions, multiplier):
+@pytest.mark.parametrize("bad", [[0, 3], [5, 3], [float("nan"), 3], [1, float("inf")], [1]])
+def test_invalid_outlier_bounds(bad):
     with pytest.raises(ValueError):
-        clean_partitions(*partitions, multiplier)
+        validate_bounds(dict(DEFAULT_BOUNDS, sepal_length=bad))
+
+
+def test_outlier_bounds_require_all_features():
+    with pytest.raises(ValueError):
+        validate_bounds({"sepal_length": [3, 9]})
