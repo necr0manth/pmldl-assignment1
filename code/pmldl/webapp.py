@@ -39,8 +39,25 @@ if "prediction" in st.session_state:
     prediction = st.session_state["prediction"]
     st.success(f"Predicted species: {prediction['species']}")
     probabilities = prediction["probabilities"]
-    st.bar_chart({"species": list(probabilities), "probability": list(probabilities.values())},
-                 x="species", y="probability")
+    # Keep dataset and chart identities stable when probability values change.
+    # The browser regression test rejects Vega's "Unrecognized data set" errors.
+    st.vega_lite_chart(
+        spec={
+            "data": {"name": "probabilities"},
+            "datasets": {"probabilities": [
+                {"species": species, "probability": probability}
+                for species, probability in probabilities.items()
+            ]},
+            "mark": {"type": "bar", "tooltip": True},
+            "encoding": {
+                "x": {"field": "species", "type": "nominal", "title": "Species"},
+                "y": {"field": "probability", "type": "quantitative",
+                      "title": "Probability", "scale": {"domain": [0, 1]}},
+            },
+        },
+        key="prediction-probabilities",
+        use_container_width=True,
+    )
     st.caption(f"Model run: {prediction['model_run_id']}")
 
 with st.expander("Current model and test metrics"):
