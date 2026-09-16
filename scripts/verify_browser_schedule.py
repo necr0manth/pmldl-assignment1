@@ -99,14 +99,22 @@ def verify_browser(browser, phase: str, expected_run_id: str) -> dict:
             page.get_by_role("button", name="Predict", exact=True).click()
             expect(page.get_by_text(f"Predicted species: {species}", exact=True)).to_be_visible(timeout=30000)
             expect(page.get_by_text(f"Model run: {expected_run_id}", exact=True)).to_be_visible(timeout=30000)
-            expect(page.get_by_test_id("stVegaLiteChart")).to_be_visible(timeout=15000)
+            # Assert actual rendered numbers, not just the presence of a chart.
+            rendered_probabilities = {}
+            expect(page.get_by_test_id("stProgress")).to_have_count(3)
+            for class_name, probability in reference["probabilities"].items():
+                label = f"{class_name}: {probability:.2%}"
+                displayed = page.get_by_text(label, exact=True)
+                expect(displayed).to_be_visible(timeout=15000)
+                rendered_probabilities[class_name] = displayed.inner_text()
             expect(page.get_by_test_id("stException")).to_have_count(0)
             page.screenshot(path=str(EVIDENCE / f"{phase}-{species}.png"), full_page=True)
             results.append({"inputs": payload, "species": species,
-                            "model_run_id": expected_run_id, "api_probabilities": reference["probabilities"]})
+                            "model_run_id": expected_run_id, "api_probabilities": reference["probabilities"],
+                            "rendered_probabilities": rendered_probabilities})
         if page_errors:
             raise AssertionError(f"Browser JavaScript errors: {page_errors}")
-        print(f"BROWSER_OK {phase}: three form submissions and probability charts; model={expected_run_id}", flush=True)
+        print(f"BROWSER_OK {phase}: three form submissions and all displayed probability values; model={expected_run_id}", flush=True)
         return {"phase": phase, "model_run_id": expected_run_id, "predictions": results,
                 "browser_version": browser.version, "javascript_errors": page_errors}
     except BaseException:
@@ -132,6 +140,7 @@ def verify_api_failure(browser) -> dict:
         button.click()
         expect(page.get_by_text(re.compile("Prediction failed\\."))).to_be_visible(timeout=30000)
         expect(page.get_by_text(re.compile("^Predicted species:"))).to_have_count(0)
+        expect(page.get_by_test_id("stProgress")).to_have_count(0)
         page.screenshot(path=str(EVIDENCE / "api-stopped-error.png"), full_page=True)
         compose("up", "-d", "--wait", "--wait-timeout", "120", "api")
         button.click()

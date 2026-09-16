@@ -7,7 +7,7 @@ recreating the two Docker services, before exiting.
 
 Chromium, controlled with Playwright, opens the real Streamlit page, fills all
 four fields, presses **Predict**, and checks the rendered species, probability
-chart and model run ID. It does this for setosa, versicolor and virginica both
+bars, every numeric probability and model run ID. It does this for setosa, versicolor and virginica both
 before and after the second automatic deployment. Direct API calls provide a
 reference; they do not replace the form submissions. The start-to-start interval
 and a changed model ID are checked separately. The test then stops the real API
@@ -47,3 +47,12 @@ not itself proof that it passed. The test does not change the data-cleaning
 policy or certify the TA's interpretation of that policy.
 
 Reference: https://playwright.dev/python/docs/ci
+
+## Regression found by visual review
+
+The initial browser test found Vega JavaScript errors on repeated predictions.
+A named-dataset change removed those errors, but screenshot review still found
+stale bars. The application now uses native Streamlit probability bars with
+explicit percentages. The browser test checks every displayed percentage against
+the real API response after every click, in addition to the predicted class and
+model ID. A green test that checks only for a chart container is not sufficient.
