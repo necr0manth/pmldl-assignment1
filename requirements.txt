@@ -1,0 +1,6 @@
+-r requirements/api.txt
+-r requirements/app.txt
+dvc==3.63.0
+mlflow==3.16.0
+PyYAML==6.0.3
+-e .

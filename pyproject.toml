@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pmldl-iris-pipeline"
+version = "1.0.0"
+description = "Automated data, training, and Docker deployment pipeline"
+requires-python = ">=3.11,<3.14"
+
+[tool.setuptools.packages.find]
+where = ["code"]
+include = ["pmldl*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["code"]
+testpaths = ["tests"]
+addopts = "-ra"

@@ -1,0 +1,48 @@
+services:
+  api:
+    image: pmldl-iris-api:local
+    build:
+      context: ../..
+      dockerfile: code/deployment/api/Dockerfile
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8000}:8000"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
+  app:
+    image: pmldl-iris-app:local
+    build:
+      context: ../..
+      dockerfile: code/deployment/app/Dockerfile
+    environment:
+      API_URL: http://api:8000
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8501}:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s

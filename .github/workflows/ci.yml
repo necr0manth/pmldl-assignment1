@@ -1,0 +1,72 @@
+name: Test complete ML pipeline
+
+'on':
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pipeline-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements*.txt
+            requirements/*.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pip check
+      - name: Unit and integration tests including MLflow and Streamlit
+        run: python -m pytest -q --junitxml=reports/junit.xml
+      - name: First full data -> model -> Docker deployment
+        run: |
+          python pipeline.py run
+          python -c 'import json; print("FIRST_MODEL_ID=" + json.load(open("models/metadata.json"))["run_id"])' >> "$GITHUB_ENV"
+      - name: Repeat all stages and verify model refresh
+        run: |
+          python pipeline.py run
+          python - <<'PYTHON'
+          import json, os
+          from urllib.request import urlopen
+          metadata = json.load(open("models/metadata.json"))
+          assert metadata["run_id"] != os.environ["FIRST_MODEL_ID"]
+          health = json.load(urlopen("http://127.0.0.1:8000/health", timeout=10))
+          assert health["model_run_id"] == metadata["run_id"]
+          deployment = json.load(open("reports/deployment.json"))
+          assert deployment["model_run_id"] == metadata["run_id"]
+          assert deployment["status"] == "deployed"
+          print("Two complete runs succeeded; the API serves the new model.")
+          PYTHON
+      - name: Show service status and logs
+        if: always()
+        run: |
+          docker compose -p pmldl-iris -f code/deployment/docker-compose.yml ps -a
+          docker compose -p pmldl-iris -f code/deployment/docker-compose.yml logs --no-color
+      - name: Upload run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-evidence
+          path: |
+            reports/
+            runs/
+            models/metadata.json
+            data/processed/cleaning_report.json
+            dvc.lock
+          retention-days: 7
+      - name: Clean up CI containers
+        if: always()
+        run: docker compose -p pmldl-iris -f code/deployment/docker-compose.yml down

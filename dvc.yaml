@@ -1,0 +1,56 @@
+stages:
+  prepare:
+    cmd: python -m pmldl.datasets
+    deps:
+      - data/raw/iris.csv
+      - code/pmldl/datasets.py
+      - code/pmldl/common.py
+      - requirements/model.txt
+    params:
+      - data
+    outs:
+      - data/processed/train.csv:
+          cache: false
+      - data/processed/test.csv:
+          cache: false
+      - data/processed/cleaning_report.json:
+          cache: false
+  train:
+    cmd: python -m pmldl.training
+    deps:
+      - data/processed/train.csv
+      - data/processed/test.csv
+      - data/processed/cleaning_report.json
+      - code/pmldl/training.py
+      - code/pmldl/common.py
+      - requirements/model.txt
+      - requirements.txt
+    params:
+      - model
+    outs:
+      - models/model.joblib:
+          cache: false
+          persist: true
+      - models/metadata.json:
+          cache: false
+          persist: true
+      - reports/evaluation.json:
+          cache: false
+    metrics:
+      - reports/metrics.json:
+          cache: false
+  deploy:
+    cmd: python -m pmldl.deployment
+    always_changed: true
+    deps:
+      - models/model.joblib
+      - models/metadata.json
+      - code/pmldl/api.py
+      - code/pmldl/webapp.py
+      - code/pmldl/deployment.py
+      - code/pmldl/common.py
+      - code/deployment
+      - requirements
+    outs:
+      - reports/deployment.json:
+          cache: false

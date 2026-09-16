@@ -1,0 +1,17 @@
+[Unit]
+Description=PMLDL complete ML pipeline every five minutes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace both paths with your actual checkout path before installation.
+WorkingDirectory=/ABSOLUTE/PATH/pmldl-assignment1
+ExecStart=/ABSOLUTE/PATH/pmldl-assignment1/.venv/bin/python pipeline.py schedule --interval 300
+Restart=on-failure
+RestartSec=15
+KillMode=control-group
+TimeoutStopSec=45
+
+[Install]
+WantedBy=default.target
