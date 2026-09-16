@@ -19,5 +19,3 @@ htmlcov/
 /mlflow.db*
 /mlartifacts/
 /mlruns/
-# Each scheduled run refreshes these local artifact digests.
-/dvc.lock

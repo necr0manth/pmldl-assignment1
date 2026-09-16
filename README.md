@@ -156,10 +156,12 @@ container recreation is not automatically rolled back**, and deployment can
 cause brief downtime. This is a local educational deployment, not a production
 blue/green rollout.
 
-The model artifacts, SQLite database, run logs, and `dvc.lock` are generated
-locally and ignored by Git. No DVC remote is needed because raw data, parameters
-and source code are committed. Scheduled run digests are kept locally; this
-project uses DVC for orchestration, not as a remote model registry.
+The model artifacts, SQLite database, and run logs are generated locally and
+ignored by Git. DVC also generates `dvc.lock` with stage signatures; that file
+must **not** be Git-ignored and can be committed after a successful run. Its
+signatures change when a new model run is packaged. No DVC remote is needed
+because raw data, parameters and source code are committed. This project uses
+DVC for orchestration, not as a remote model registry.
 
 ### Persistent scheduling on Linux
 
