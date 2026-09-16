@@ -1,0 +1,2 @@
+# Separate from application dependencies: required only for the real browser smoke test.
+playwright==1.57.0

@@ -15,7 +15,7 @@ concurrency:
 jobs:
   pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,36 +27,36 @@ jobs:
             requirements/*.txt
       - name: Install dependencies
         run: |
-          python -m pip install -r requirements-dev.txt
+          mkdir -p reports
+          python -m pip install --quiet -r requirements-dev.txt -r requirements-browser.txt
           python -m pip check
           python -m dvc dag
+      - name: Install real Chromium browser
+        run: |
+          python -m playwright install --with-deps chromium > reports/browser-install.log 2>&1 || { tail -100 reports/browser-install.log; exit 1; }
       - name: Unit and integration tests including MLflow and Streamlit
         run: python -m pytest -q --junitxml=reports/junit.xml
-      - name: First full data -> model -> Docker deployment
+      - name: Browser E2E and two real five-minute scheduled Docker deployments
+        run: python scripts/verify_browser_schedule.py
+      - name: Show browser verification summary
+        if: always()
         run: |
-          python pipeline.py run
-          python -c 'import json; print("FIRST_MODEL_ID=" + json.load(open("models/metadata.json"))["run_id"])' >> "$GITHUB_ENV"
-      - name: Repeat all stages and verify model refresh
-        run: |
-          python pipeline.py run
-          python - <<'PYTHON'
-          import json, os
-          from urllib.request import urlopen
-          metadata = json.load(open("models/metadata.json"))
-          assert metadata["run_id"] != os.environ["FIRST_MODEL_ID"]
-          health = json.load(urlopen("http://127.0.0.1:8000/health", timeout=10))
-          assert health["model_run_id"] == metadata["run_id"]
-          deployment = json.load(open("reports/deployment.json"))
-          assert deployment["model_run_id"] == metadata["run_id"]
-          assert deployment["status"] == "deployed"
-          print("Two complete runs succeeded; the API serves the new model.")
-          PYTHON
+          if [ -f reports/browser/summary.json ]; then
+            cat reports/browser/summary.json
+            echo '## Browser and real scheduler verification' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat reports/browser/summary.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Show service status and logs
         if: always()
         run: |
           docker compose -p pmldl-iris -f code/deployment/docker-compose.yml ps -a
-          docker compose -p pmldl-iris -f code/deployment/docker-compose.yml logs --no-color
-      - name: Upload run evidence
+          docker compose -p pmldl-iris -f code/deployment/docker-compose.yml logs --no-color --tail 100
+          if [ -f reports/browser/summary.json ] && ! grep -q '"status": "passed"' reports/browser/summary.json; then
+            tail -100 reports/browser/scheduler.log
+          fi
+      - name: Upload run evidence and browser screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
