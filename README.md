@@ -7,10 +7,42 @@ services are required.
 
 ## Quick start: the complete assignment
 
-Use Linux, macOS, or **WSL2** on Windows, with Git, **Python 3.12**, Docker
-Engine/Desktop and Docker Compose **v2.20+**. Docker must already be running and
-accessible without `sudo`. Native Windows is not supported by POSIX process
-locks. CI verifies Linux; other host platforms are not certified by that run.
+Use Git, **Python 3.12**, Docker Engine/Desktop and Docker Compose **v2.20+**.
+Docker must already be running and accessible to your user. The controller now
+supports **native Windows Python (PowerShell)** as well as Linux/macOS/WSL2;
+you do not need a WSL terminal. The API and app still use Linux Docker images.
+On Windows, start Docker Desktop in **Linux containers** mode. Its internal
+WSL2/Hyper-V backend is separate from where you run the Python controller.
+
+### Windows / PowerShell
+
+```powershell
+git clone https://github.com/necr0manth/pmldl-assignment1.git
+cd pmldl-assignment1
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pip check
+docker info
+docker compose version
+.\.venv\Scripts\python.exe pipeline.py schedule --interval 300
+```
+
+Calling the venv executable directly avoids PowerShell activation-policy issues.
+Use a **Windows-created** venv, not one copied from WSL/Linux. For other commands
+below, replace `python` with `.\.venv\Scripts\python.exe` unless your venv is
+activated. To inspect MLflow from a second PowerShell terminal:
+
+```powershell
+.\.venv\Scripts\python.exe -m mlflow ui --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5000
+```
+
+The optional systemd installer and `make` shortcuts are not Windows requirements.
+The foreground scheduler must stay running; Windows Task Scheduler installation
+is not supplied. See [Windows verification boundaries](docs/WINDOWS.md).
+
+### Linux / macOS / WSL2
+
+Docker must be accessible without `sudo`.
 
 ```bash
 git clone https://github.com/necr0manth/pmldl-assignment1.git
@@ -162,9 +194,12 @@ then separately runs the normal retraining pipeline.
 The scheduler executes `python -m dvc repro --force --no-run-cache deploy`.
 DVC orders `prepare → train → deploy`. Starts use 300-second slots. When a cycle
 exceeds that interval, missed slots are skipped rather than overlapped. Separate
-OS locks prevent multiple schedulers and concurrent pipeline attempts. Do not
+native locks through `filelock` prevent multiple schedulers and concurrent pipeline attempts. Do not
 remove lock files to bypass running processes, or run DVC manually alongside the
-scheduler. Failures are recorded in `runs/<id>.log`, `runs/<id>.json` and
+scheduler. The mere presence of a lock file is not evidence of a running process.
+On Windows, cancellation force-stops the active DVC process tree with
+`taskkill /T /F`; on POSIX it first uses SIGTERM. Output is read on a separate
+thread so a silent child cannot indefinitely block Ctrl+C handling on Windows. Failures are recorded in `runs/<id>.log`, `runs/<id>.json` and
 `runs/latest.json`; the next scheduled attempt retries the complete pipeline.
 
 The generated data, current model, logs and tracking database are Git-ignored.
@@ -213,12 +248,16 @@ immutable environment lockfile.
 
 See [validation status and limitations](docs/VALIDATION.md) and
 [browser test details](docs/BROWSER_TEST.md). CI installs a fresh Python 3.12 venv,
-checks dependencies and the DVC DAG, runs all tests without allowing skips,
+checks dependencies and the DVC DAG, runs all Linux tests without allowing skips,
 verifies the included model, exercises actual scheduled Docker deployments in
 Chromium and Firefox without replacing tabs, opens model metrics and MLflow UI,
 stops/restores the real API, tests a real systemd user service and tests alternate
 ports. Logs, screenshots, traces and a verified model candidate are in the
 `pipeline-evidence` Actions artifact. Exact source inputs are archived separately.
+A native Windows job runs the platform-independent suite (only Linux systemd
+unit tests are excluded), real lock/process-cancellation tests and two actual
+DVC/MLflow **training-only** runs. This does not certify a full Windows Docker
+Desktop deployment; the full container/browser checks run on Linux.
 
 A workflow definition is not proof of a passed run: inspect the Actions result
 for your commit. **CI is neither permanent hosting nor your own demonstration.**

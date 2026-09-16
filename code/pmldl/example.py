@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.metadata
 import json
 import os
@@ -19,6 +20,21 @@ from pmldl.datasets import prepare
 from pmldl.scheduler import exclusive_lock
 
 
+
+def text_hash_matches(path: Path, expected: str) -> bool:
+    """Accept LF/CRLF-only differences in text, never relax model-byte hashes.
+
+    Existing Windows checkouts can contain CRLF; pandas also writes the native
+    line ending. Both representations describe the same input/source/CSV.
+    Compare known byte digests, without ignoring any other content changes.
+    """
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    return expected in {
+        hashlib.sha256(data).hexdigest(),
+        hashlib.sha256(data.replace(b"\n", b"\r\n")).hexdigest(),
+    }
+
+
 def verify(root: Path, directory: Path) -> dict:
     """Verify hashes before loading our trusted pickle; reproduce holdout metrics."""
     metadata = json.loads((directory / "metadata.json").read_text())
@@ -26,10 +42,10 @@ def verify(root: Path, directory: Path) -> dict:
         raise ValueError("Example model hash mismatch")
     for field, path in (("raw_sha256", root / "data/raw/iris.csv"),
                         ("params_sha256", root / "params.yaml")):
-        if metadata[field] != sha256(path):
+        if not text_hash_matches(path, metadata[field]):
             raise ValueError(f"Example is outdated: {path.name} changed; regenerate the snapshot")
     for name, digest in metadata["source_hashes"].items():
-        if Path(name).name != name or sha256(root / "code/pmldl" / name) != digest:
+        if Path(name).name != name or not text_hash_matches(root / "code/pmldl" / name, digest):
             raise ValueError(f"Example training source changed: {name}")
     for name, version in metadata["versions"].items():
         if importlib.metadata.version(name) != version:
@@ -44,7 +60,7 @@ def verify(root: Path, directory: Path) -> dict:
         output = Path(name)
         report = prepare(root / "data/raw/iris.csv", output, **parameters(root)["data"])
         for partition in ("train", "test"):
-            if sha256(output / f"{partition}.csv") != metadata[f"{partition}_sha256"]:
+            if not text_hash_matches(output / f"{partition}.csv", metadata[f"{partition}_sha256"]):
                 raise ValueError(f"Example {partition} partition no longer reproduces")
         test = pd.read_csv(output / "test.csv")
         predicted = model.predict(test[FEATURES])

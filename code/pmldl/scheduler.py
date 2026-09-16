@@ -1,12 +1,11 @@
 """Run the complete DVC graph immediately and every five minutes thereafter.
 
-Linux/macOS/WSL2 only: fcntl locks prevent overlapping local processes.
-Use the supplied systemd user service for persistent scheduling.
+Windows, Linux and macOS: native file locks prevent overlapping local processes.
+The optional systemd user service is Linux-only.
 """
 from __future__ import annotations
 
 import argparse
-import fcntl
 import math
 import os
 import signal
@@ -16,6 +15,10 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from queue import Empty, Queue
+from threading import Thread
+
+from filelock import FileLock, Timeout
 
 from pmldl.common import ROOT, utc_now, write_json
 from pmldl.deployment import compose_command
@@ -27,20 +30,88 @@ class AlreadyRunning(RuntimeError):
 
 @contextmanager
 def exclusive_lock(path: Path):
+    """Fail fast using a native OS lock, not the existence of a stale file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+") as stream:
+    lock = FileLock(path, timeout=0)
+    try:
+        lock.acquire()
+    except Timeout as error:
+        raise AlreadyRunning(f"Another process holds {path.name}") from error
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def process_group_options() -> dict:
+    """Isolate the child tree from terminal Ctrl+C; the runner owns cleanup."""
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def stop_process_tree(process: subprocess.Popen, timeout: float = 30) -> None:
+    """Stop the DVC process and its children, never unrelated Python processes.
+
+    Windows uses taskkill /T /F (a forced stop); POSIX first sends SIGTERM to
+    the dedicated process group and escalates to SIGKILL on timeout.
+    Docker containers themselves remain managed by the Docker daemon.
+    """
+    if process.poll() is not None:
+        return
+    if sys.platform == "win32":
+        result = subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace", timeout=timeout,
+        )
+        if result.returncode and process.poll() is None:
+            raise subprocess.CalledProcessError(
+                result.returncode, result.args, output=result.stdout, stderr=result.stderr
+            )
+    else:
         try:
-            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise AlreadyRunning(f"Another process holds {path.name}") from error
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass  # The child may have exited between poll() and killpg().
         try:
-            stream.seek(0)
-            stream.truncate()
-            stream.write(str(os.getpid()))
-            stream.flush()
-            yield
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    process.wait(timeout=timeout)
+
+
+def output_lines(process: subprocess.Popen):
+    """Keep the main thread interruptible while a silent Windows child runs.
+
+    A blocking pipe readline in the main thread can delay Ctrl+C on Windows.
+    Read in a daemon thread and poll a queue with a short finite timeout instead.
+    """
+    queue = Queue()
+
+    def read_output():
+        try:
+            for line in process.stdout:
+                queue.put(line)
+        except Exception as error:
+            queue.put(error)
         finally:
-            fcntl.flock(stream, fcntl.LOCK_UN)
+            queue.put(None)
+
+    Thread(target=read_output, name="pipeline-output", daemon=True).start()
+    while True:
+        try:
+            value = queue.get(timeout=0.1)
+        except Empty:
+            continue
+        if value is None:
+            return
+        if isinstance(value, Exception):
+            raise value
+        yield value
 
 
 def repro_command(train_only: bool = False) -> list[str]:
@@ -75,14 +146,17 @@ def run_once(root: Path = ROOT, *, train_only: bool = False) -> int:
                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=15)
                 env = os.environ.copy()
                 env["PYTHONUNBUFFERED"] = "1"
+                env["PYTHONIOENCODING"] = "utf-8"
+                env["PYTHONUTF8"] = "1"
                 env["DVC_NO_ANALYTICS"] = "1"
                 # Stage commands use `python`: put this interpreter's venv first.
                 env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
                 env["PYTHONPATH"] = str(root / "code") + os.pathsep + env.get("PYTHONPATH", "")
                 process = subprocess.Popen(repro_command(train_only), cwd=root, env=env,
                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                           text=True, bufsize=1, start_new_session=True)
-                for line in process.stdout:
+                                           text=True, encoding="utf-8", errors="replace",
+                                           bufsize=1, **process_group_options())
+                for line in output_lines(process):
                     print(line, end="", flush=True)
                     log.write(line)
                     log.flush()
@@ -99,13 +173,7 @@ def run_once(root: Path = ROOT, *, train_only: bool = False) -> int:
                 log.write(f"Pipeline failed: {error}\n")
             finally:
                 if process is not None:
-                    if process.poll() is None:
-                        os.killpg(process.pid, signal.SIGTERM)
-                        try:
-                            process.wait(timeout=30)
-                        except subprocess.TimeoutExpired:
-                            os.killpg(process.pid, signal.SIGKILL)
-                            process.wait()
+                    stop_process_tree(process)
                     if process.stdout:
                         process.stdout.close()
                 record.update(finished_at=utc_now(), return_code=return_code,
@@ -154,6 +222,12 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("down", help="Stop and remove this project's API/app containers")
     args = parser.parse_args(argv)
     signal.signal(signal.SIGTERM, stop_requested)
+    if sys.platform == "win32":
+        signal.signal(signal.SIGBREAK, stop_requested)
+        # Redirected PowerShell output need not use UTF-8 by default.
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
     try:
         if args.command == "run":
             return run_once(train_only=args.train_only)

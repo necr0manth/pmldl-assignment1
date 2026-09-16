@@ -45,6 +45,8 @@ def install(root: Path, python: Path, unit_dir: Path, name: str) -> Path:
 
 
 def main() -> None:
+    if sys.platform != "linux":
+        raise SystemExit("systemd is Linux-only; use python pipeline.py schedule on this platform.")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--unit-dir", type=Path, default=Path.home() / ".config/systemd/user")
     parser.add_argument("--name", default="pmldl-pipeline.service")

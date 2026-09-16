@@ -55,3 +55,12 @@ def test_example_install_does_not_race_scheduler(project, example):
     with exclusive_lock(project / "runs/.scheduler.lock"):
         with pytest.raises(AlreadyRunning):
             install(project, example)
+
+
+def test_example_verifies_after_windows_line_ending_checkout(project, example):
+    # Simulate an existing core.autocrlf checkout, not just a newly cloned one.
+    for relative in ('data/raw/iris.csv', 'params.yaml',
+                     'code/pmldl/datasets.py', 'code/pmldl/training.py'):
+        path = project / relative
+        path.write_bytes(path.read_bytes().replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))
+    assert verify(project, example)['status'] == 'verified'

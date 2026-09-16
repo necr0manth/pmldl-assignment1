@@ -22,6 +22,7 @@ from playwright.sync_api import expect, sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "code"))
 from pmldl.deployment import compose_command, service_url
+from pmldl.scheduler import process_group_options, stop_process_tree
 
 EVIDENCE = ROOT / "reports/browser"
 INTERVAL = 300
@@ -136,10 +137,10 @@ def check_mlflow(browser, metadata: dict) -> dict:
     context = browser.new_context()
     page = context.new_page()
     try:
-        with (EVIDENCE / "mlflow-server.log").open("w") as log:
+        with (EVIDENCE / "mlflow-server.log").open("w", encoding="utf-8") as log:
             process = subprocess.Popen([sys.executable, "-m", "mlflow", "ui", "--backend-store-uri", uri,
                                         "--host", "127.0.0.1", "--port", "5000"],
-                                       cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                                       cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, **process_group_options())
             deadline = time.monotonic() + 90
             while True:
                 try:
@@ -159,17 +160,12 @@ def check_mlflow(browser, metadata: dict) -> dict:
             return {"run_id": run.info.run_id, "run_name": run.info.run_name, "metrics_visible": True}
     except BaseException:
         page.screenshot(path=str(EVIDENCE / "mlflow-failure.png"), full_page=True)
-        (EVIDENCE / "mlflow-failure.html").write_text(page.content())
+        (EVIDENCE / "mlflow-failure.html").write_text(page.content(), encoding="utf-8")
         raise
     finally:
         context.close()
-        if process is not None and process.poll() is None:
-            os.killpg(process.pid, signal.SIGTERM)
-            try:
-                process.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=10)
+        if process is not None:
+            stop_process_tree(process, timeout=20)
 
 
 def main() -> None:
@@ -188,10 +184,11 @@ def main() -> None:
     handles = []
     previous = {path.stem for path in (ROOT / "runs").glob("*.json") if path.stem != "latest"}
     try:
-        with (EVIDENCE / "scheduler.log").open("w") as log, sync_playwright() as playwright:
+        with (EVIDENCE / "scheduler.log").open("w", encoding="utf-8") as log, sync_playwright() as playwright:
             if not args.existing:
                 process = subprocess.Popen([sys.executable, "pipeline.py", "schedule", "--interval", str(INTERVAL),
-                                            "--max-runs", "2"], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+                                            "--max-runs", "2"], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                                           **process_group_options())
             try:
                 for name in args.browsers:
                     browser = getattr(playwright, name).launch(headless=True)
@@ -243,7 +240,7 @@ def main() -> None:
             except BaseException:
                 for name, browser, context, page, errors in handles:
                     page.screenshot(path=str(EVIDENCE / f"{name}-failure.png"), full_page=True)
-                    (EVIDENCE / f"{name}-failure.html").write_text(page.content())
+                    (EVIDENCE / f"{name}-failure.html").write_text(page.content(), encoding="utf-8")
                 raise
             finally:
                 for name, browser, context, page, errors in handles:
@@ -255,12 +252,11 @@ def main() -> None:
         raise
     finally:
         if process is not None and process.poll() is None:
-            process.send_signal(signal.SIGTERM)
+            process.send_signal(signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGTERM)
             try:
                 process.wait(timeout=45)
             except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=10)
+                stop_process_tree(process, timeout=10)
         (EVIDENCE / "summary.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print(json.dumps(evidence, indent=2))
 

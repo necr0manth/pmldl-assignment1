@@ -3,6 +3,8 @@
 dvc==3.63.0
 # DVC 3.63 imports gitwildmatch internals removed in pathspec 1.x.
 pathspec==0.12.1
+# Cross-platform native process locks (also used transitively by DVC).
+filelock==3.29.0
 mlflow==3.16.0
 PyYAML==6.0.3
 -e .

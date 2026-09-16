@@ -1,0 +1,5 @@
+# Keep source/input hashes stable in new Windows checkouts.
+* text=auto eol=lf
+*.joblib binary
+*.png binary
+*.zip binary

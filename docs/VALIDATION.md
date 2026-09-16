@@ -1,99 +1,66 @@
 # Verification status
 
-This document separates actual evidence from the checks implemented in CI. A
-workflow definition alone is not a passed run. Check the Actions conclusion for
-the exact commit and its `pipeline-evidence` artifact.
+## Current portability revision
 
-## Observed final result — 2026-09-16
+The controller no longer imports `fcntl` unconditionally. It uses native
+cross-platform `filelock` locks, Windows process-tree cancellation, interruptible
+output streaming and UTF-8 logs. Text snapshot verification accepts LF/CRLF-only
+differences without weakening binary model integrity checks. The data/model
+training code, parameters and committed model have not changed in this revision.
 
-**PASS**, verified implementation commit
-`101e72d33fd18be57100ae4edbea9f62de6a7712`.
-[GitHub Actions run 35131761245](https://github.com/necr0manth/pmldl-assignment1/actions/runs/35131761245)
-completed successfully at **18:11:21 UTC**. Both the source-archive and pipeline
-jobs succeeded. This section reports the downloaded evidence from that run,
-not an expected result inferred from a workflow definition.
+See [Windows support and exact verification scope](WINDOWS.md). The workflow now
+runs a native Windows job in addition to the full Linux Docker/browser job.
+Check the Actions result for the **exact current commit** and download the
+artifacts. A workflow definition is not evidence of a successful run.
 
-- **70 Python tests passed; 0 failures, 0 errors, 0 skipped tests.**
-- The committed 3714-byte example model passed hash/schema/version checks and
-  recomputation of all five holdout metrics. It was installed, deployed in
-  Docker, and used for six form submissions across Chromium and Firefox.
-- A real systemd user service executed the full pipeline. After its scheduler
-  was killed with SIGKILL, systemd automatically restarted it (PID 5066 → 5819,
-  one recorded restart) and completed another full pipeline. Graceful stop and
-  release of both process locks passed.
-- The real foreground scheduler completed two additional full DVC/Docker
-  cycles with a **300.000295-second start-to-start interval**. There were twelve
-  browser form submissions: three classes in each of Chromium 143.0.7499.4 and
-  Firefox 144.0.2, before and after redeployment. **The same tabs were retained**
-  without a reload or replacement on the second cycle. Displayed class,
-  probabilities, new model ID and the expanded metrics panel were checked.
-- Real API stop/error/stale-result removal/recovery checks passed in both
-  browser sessions. The actual MLflow UI opened the new logged run and rendered
-  its run name and metric keys.
-- A further full deployment with API port **18000**, app port **18501** and
-  Compose project **pmldl-iris-alt** passed six more browser form submissions.
-- Export and verification of the newly trained model candidate passed.
+- Linux: all tests, committed-model deployment, two real five-minute DVC/Docker
+  cycles, same Chromium/Firefox tabs across redeployment, numeric probabilities,
+  model IDs, expanded metrics, real API outage/recovery, MLflow UI, real systemd
+  lifecycle/crash restart and nondefault-port deployment.
+- Windows: all applicable Python tests (Linux systemd unit tests excluded),
+  real locks/process-tree cancellation, exact snapshot checks and two real
+  DVC/MLflow training runs with model reload and FastAPI predictions.
+- `pipeline-evidence`: Linux reports, screenshots, traces, model and journal.
+- `windows-evidence`: native test report and `reports/native/summary.json`.
 
-Machine-readable results are committed in [verification.json](verification.json).
-The complete evidence artifact is `pipeline-evidence`, ID `10461349743`, SHA-256
+The Windows job does not run Docker Desktop. It must not be cited as proof of
+an end-to-end Windows Docker deployment. The browser/deployment suite runs with
+real Linux containers in the Linux job.
+
+## Historical verified implementation — 2026-09-16
+
+Commit `101e72d33fd18be57100ae4edbea9f62de6a7712` passed
+[Actions run 35131761245](https://github.com/necr0manth/pmldl-assignment1/actions/runs/35131761245)
+at 18:11:21 UTC: **70 tests, zero failures/errors/skips**, exact included model
+verification/deployment, same-tab Chromium/Firefox checks, MLflow UI, real
+systemd crash recovery and nondefault-port deployment. Its measured interval
+was **300.000295 seconds**. See [historical machine-readable evidence](verification.json).
+The artifact was `pipeline-evidence`, ID `10461349743`, SHA-256
 `904f1db1d34dc8be3ab8aaf425469f028d335f010148227aef3d752aa33e53fe`.
-It contains 81 files including test reports, model artifacts, scheduler logs,
-systemd journal, browser screenshots and Playwright traces. GitHub artifacts
-have limited retention; rerun the workflow to obtain fresh evidence.
+Those historical results do not certify the later scheduler changes or Windows.
 
-This results-only documentation update does not change the tested application,
-model, tests or workflow. Later functional changes require their own successful
-run; a historical green result does not certify different code.
+An earlier version (`0b031f5`) passed 45 tests and a real Chromium/Docker test,
+but used a different cleaning order. The earliest local-sandbox-only report
+(42 tests plus unavailable optional modules) is not current CI evidence.
 
-## What changed to follow the assignment
+## Assignment alignment and model
 
-Data processing now performs **load → clean → split → save**. Missing rows are
-removed, and explicit fixed-bound outliers are removed from the whole input
-before splitting. These demo bounds are configuration, not statistics fitted
-on future test rows. The original CSV has one duplicate and no fixed-bound
-outliers or missing rows; the revised output is **119 train rows and 30 test
-rows**. Tests inject missing values and extreme outliers and intercept the split
-to verify that cleaning precedes it. All model feature fitting still uses train
-only. The small trained model and its matching metadata are in `models/example/`,
-separate from the runtime files generated by DVC.
+Data processing is **load -> clean -> split -> save**. Missing rows, duplicates
+and fixed-bound outliers are removed before splitting, without fitting statistics
+on future test rows. Default data yields 119 train and 30 test rows. Tests inject
+missing values/outliers and check they do not reach the splitting function.
+Feature engineering and model fitting still use train only. The tiny fixed
+holdout is a demonstration, not an independent botanical benchmark.
 
-The first revised workflow exposed a real service-unit syntax error: quoting
-`WorkingDirectory` as though it were `ExecStart`. The installer now renders the
-raw absolute working-directory path and separately quotes command arguments.
-The fixed unit passed both `systemd-analyze verify` and the actual lifecycle test.
-
-## Where the evidence lives
-
-- `reports/junit.xml`: exact test count, failures and skips.
-- `reports/browser/summary.json`: run spacing, browser versions, same-tab checks,
-  rendered probabilities, API recovery and MLflow UI results.
-- `reports/browser-example/summary.json`: deployment of the committed snapshot.
-- `reports/browser-alt/summary.json`: nondefault-port checks.
-- `reports/systemd/summary.json` and `journal.log`: actual service lifecycle.
-- `reports/example-verification.json`: validation of the committed snapshot.
-- `reports/example-candidate/`: newly trained model, metadata and provenance.
-- Browser folders also contain actual screenshots and Playwright traces.
-
-Models and metrics are observations from executed code, not hard-coded claimed
-results. The held-out dataset is small and fixed; this is an MLOps demonstration,
-not an independent botanical benchmark.
+`models/example/` contains the actual 3714-byte trained snapshot with matching
+metadata/provenance, separate from DVC's runtime outputs. Verification recomputes
+its metrics and checks model bytes, source/input hashes and dependency versions.
+Normal scheduling always trains new models rather than serving the example.
 
 ## Explicit limitations
 
-The CI environment is not the user's computer. Native Windows is unsupported;
-WSL2 and macOS are not exercised by Linux CI. There is no host-reboot or actual
-logout test, multi-day soak test, load test, public-internet/TLS test, or test of
-every possible network/disk/Docker failure. Firefox and Chromium are covered;
-Safari/WebKit is not. IPv6 URL formatting has unit coverage, not a real IPv6
-container deployment. No automatic deployment rollback or zero downtime is
-promised or required for this educational assignment.
-
-## Historical results (not current-code certification)
-
-The previous implementation at `0b031f547309dc7b7142766330cfba761fc985d2`
-passed 45 Python tests with no skips and a real Chromium/Docker scheduler test
-on 2026-09-16 (Actions run `35126242861`, start gap 300.00056 s). That version used
-a different data-cleaning order and did not test same-tab reconnection or the
-systemd service. Its results must not be used as proof for the revised cleaning
-policy. The earliest authoring-sandbox result (42 tests plus missing optional
-modules) has been superseded by real CI; it is not the current validation status.
+CI is not the user's computer. There is no Windows Docker Desktop, host reboot,
+actual logout, multi-day soak, load, public-internet/TLS or exhaustive disk/network
+failure test. macOS, WSL2 as a host and Safari/WebKit are not exercised. IPv6 URL
+formatting has unit coverage but no live IPv6 Docker deployment. No automatic
+rollback, zero downtime or Windows Task Scheduler installation is supplied.
