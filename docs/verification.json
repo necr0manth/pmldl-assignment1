@@ -1,0 +1,104 @@
+{
+  "tested_commit": "101e72d33fd18be57100ae4edbea9f62de6a7712",
+  "workflow_run_id": 35131761245,
+  "workflow_url": "https://github.com/necr0manth/pmldl-assignment1/actions/runs/35131761245",
+  "tests": {
+    "tests": 70,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0
+  },
+  "scheduled_runs": 2,
+  "observed_start_gap_seconds": 300.000295,
+  "browser_engines": [
+    "chromium",
+    "firefox"
+  ],
+  "browser_versions": {
+    "chromium": "143.0.7499.4",
+    "firefox": "144.0.2"
+  },
+  "same_tabs_across_redeployment": true,
+  "scheduled_browser_predictions": 12,
+  "expanded_model_metrics": true,
+  "mlflow_ui": {
+    "run_id": "1c9e3870132440be9547fb2f553b5ea0",
+    "run_name": "iris-2026-09-16T18:09:44.886353+00:00",
+    "metrics_visible": true
+  },
+  "api_failure_recovery": {
+    "real_api_stop": true,
+    "stale_results_removed": true,
+    "recovered": true
+  },
+  "systemd": {
+    "automatic_restarts": 1,
+    "enabled": true,
+    "first_run": {
+      "duration_seconds": 21.633,
+      "finished_at": "2026-09-16T18:04:02.359990+00:00",
+      "log_file": "runs/cae2bfa6646e409f85dc0fda1b887f99.log",
+      "return_code": 0,
+      "run_id": "cae2bfa6646e409f85dc0fda1b887f99",
+      "started_at": "2026-09-16T18:03:40.727094+00:00",
+      "status": "succeeded",
+      "target": "deploy"
+    },
+    "host_reboot_tested": false,
+    "locks_released": true,
+    "logout_tested": false,
+    "new_pid": "5819",
+    "old_pid": "5066",
+    "restarted_run": {
+      "duration_seconds": 20.843,
+      "finished_at": "2026-09-16T18:04:38.660564+00:00",
+      "log_file": "runs/e5dfee09732b4758b10e9ce30c5f7d7c.log",
+      "return_code": 0,
+      "run_id": "e5dfee09732b4758b10e9ce30c5f7d7c",
+      "started_at": "2026-09-16T18:04:17.818072+00:00",
+      "status": "succeeded",
+      "target": "deploy"
+    },
+    "status": "passed",
+    "stopped": true
+  },
+  "alternate_deployment": {
+    "api": "http://127.0.0.1:18000",
+    "app": "http://127.0.0.1:18501",
+    "status": "passed",
+    "browser_predictions": 6
+  },
+  "committed_model": {
+    "status": "verified",
+    "model_run_id": "d04451b3a77642f691f8dd712c169fbd",
+    "model_sha256": "f763fd1965d26d2412dedebc3f5db4446210ca92f6a6ce5ac5bb7c859dc9a724",
+    "metrics": {
+      "accuracy": 0.9666666666666667,
+      "f1_macro": 0.9665831244778612,
+      "precision_macro": 0.9696969696969697,
+      "recall_macro": 0.9666666666666667,
+      "log_loss": 0.11430278474279915
+    },
+    "train_rows": 119,
+    "test_rows": 30,
+    "browser_predictions": 6
+  },
+  "not_tested": [
+    "user machine",
+    "actual host reboot or logout",
+    "multi-day soak/load",
+    "Safari/WebKit",
+    "real IPv6 deployment"
+  ],
+  "deployment_limitations": [
+    "brief downtime during recreation",
+    "no automatic rollback"
+  ],
+  "workflow_conclusion": "success",
+  "workflow_completed_at": "2026-09-16T18:11:21Z",
+  "evidence_artifact": {
+    "id": 10461349743,
+    "name": "pipeline-evidence",
+    "sha256": "904f1db1d34dc8be3ab8aaf425469f028d335f010148227aef3d752aa33e53fe"
+  }
+}
