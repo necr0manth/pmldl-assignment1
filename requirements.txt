@@ -1,6 +1,8 @@
 -r requirements/api.txt
 -r requirements/app.txt
 dvc==3.63.0
+# DVC 3.63 imports gitwildmatch internals removed in pathspec 1.x.
+pathspec==0.12.1
 mlflow==3.16.0
 PyYAML==6.0.3
 -e .
