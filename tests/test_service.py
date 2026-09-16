@@ -2,12 +2,12 @@ import sys
 from pathlib import Path
 
 import pytest
-from pmldl.service import install, render, unit_quote
+from pmldl.service import install, render, unit_quote, unit_workdir
 
 
 def test_unit_paths_are_rendered_and_quoted():
     result = render(Path('/tmp/project with spaces%'), Path('/opt/venv/bin/python'))
-    assert 'WorkingDirectory="/tmp/project with spaces%%"' in result
+    assert 'WorkingDirectory=/tmp/project with spaces%%' in result
     assert 'ExecStart="/opt/venv/bin/python" "/tmp/project with spaces%%/pipeline.py"' in result
     assert '@WORKDIR@' not in result and '@PYTHON@' not in result
     assert 'schedule --interval 300' in result and 'Restart=on-failure' in result
@@ -28,3 +28,11 @@ def test_unit_injection_is_rejected(path):
 def test_bad_unit_name_is_rejected(tmp_path):
     with pytest.raises(ValueError):
         install(tmp_path, Path(sys.executable), tmp_path, '../bad.service')
+
+
+def test_workdir_uses_raw_single_path_not_command_quoting():
+    assert unit_workdir('/tmp/a b%test') == '/tmp/a b%%test'
+    with pytest.raises(ValueError):
+        unit_workdir('/tmp/bad\npath')
+    with pytest.raises(ValueError):
+        unit_workdir('relative')

@@ -1,0 +1,18 @@
+{
+  "exported_at": "2026-09-16T17:58:14.136322+00:00",
+  "metrics": {
+    "accuracy": 0.9666666666666667,
+    "f1_macro": 0.9665831244778612,
+    "log_loss": 0.11430278474279915,
+    "precision_macro": 0.9696969696969697,
+    "recall_macro": 0.9666666666666667
+  },
+  "model_run_id": "d04451b3a77642f691f8dd712c169fbd",
+  "model_sha256": "f763fd1965d26d2412dedebc3f5db4446210ca92f6a6ce5ac5bb7c859dc9a724",
+  "purpose": "Small checked-in example; normal scheduled runs always train a new model.",
+  "source_commit": "63dd374501386f6a43e7e6810c7c5abb939856e4",
+  "status": "verified",
+  "test_rows": 30,
+  "train_rows": 119,
+  "workflow_run": "35130202220"
+}

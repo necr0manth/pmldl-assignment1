@@ -1,0 +1,39 @@
+{
+  "classes": [
+    "setosa",
+    "versicolor",
+    "virginica"
+  ],
+  "features": [
+    "sepal_length",
+    "sepal_width",
+    "petal_length",
+    "petal_width"
+  ],
+  "metrics": {
+    "accuracy": 0.9666666666666667,
+    "f1_macro": 0.9665831244778612,
+    "log_loss": 0.11430278474279915,
+    "precision_macro": 0.9696969696969697,
+    "recall_macro": 0.9666666666666667
+  },
+  "mlflow_model_uri": "models:/m-052a26fbf04847629c19fa753deb39f6",
+  "model_sha256": "f763fd1965d26d2412dedebc3f5db4446210ca92f6a6ce5ac5bb7c859dc9a724",
+  "params_sha256": "7e81087e75fe6d7a1d060e34d4f71f9037abd055ce6c9bc2086913b98a471126",
+  "raw_sha256": "fb6a5d7ff2ad00a1b6b3fd6c081fc1c65342c0440384394c2c7b59f1c8556510",
+  "run_id": "d04451b3a77642f691f8dd712c169fbd",
+  "source_hashes": {
+    "datasets.py": "aa1034d60d1fdac8dae3ecbed1969e49ac8cda5177acc987a7678e3c82c9e8a4",
+    "training.py": "417ca4256fd7aab73e39997dea207092113f4b900a6e1e798b1203e160fc0df1"
+  },
+  "test_sha256": "de8962da43df4f44054f893dcef9b1dec27e88d4c46be68c41db58bda931d735",
+  "train_sha256": "8691a4503bce9a118857d207e28ff49d9e8216e3239b925d45b813e8778da444",
+  "trained_at": "2026-09-16T17:52:42.090159+00:00",
+  "versions": {
+    "joblib": "1.5.3",
+    "numpy": "2.3.5",
+    "pandas": "2.2.3",
+    "scikit-learn": "1.8.0",
+    "scipy": "1.17.0"
+  }
+}

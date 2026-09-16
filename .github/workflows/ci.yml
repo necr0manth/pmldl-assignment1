@@ -57,16 +57,12 @@ jobs:
         run: |
           python -m pytest -q --junitxml=reports/junit.xml
           python -c 'import xml.etree.ElementTree as E; assert all(int(s.get("skipped", "0")) == 0 for s in E.parse("reports/junit.xml").iter("testsuite"))'
-      - name: Verify and deploy the checked-in example when present
+      - name: Verify and deploy the checked-in trained model
         run: |
-          if [ -f models/example/model.joblib ]; then
-            python scripts/example_model.py verify > reports/example-verification.json
-            python scripts/example_model.py install
-            python -m pmldl.deployment
-            python scripts/verify_browser_schedule.py --existing --evidence-dir reports/browser-example
-          fi
-      - name: Same browser tabs across two real five-minute deployments and MLflow UI
-        run: python scripts/verify_browser_schedule.py
+          python scripts/example_model.py verify > reports/example-verification.json
+          python scripts/example_model.py install
+          python -m pmldl.deployment
+          python scripts/verify_browser_schedule.py --existing --evidence-dir reports/browser-example
       - name: Real systemd user service start, crash recovery and stop
         run: |
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
@@ -74,6 +70,8 @@ jobs:
           sudo loginctl enable-linger "$(id -un)"
           sudo systemctl start "user@$(id -u).service"
           python scripts/verify_service.py
+      - name: Same browser tabs across two real five-minute deployments and MLflow UI
+        run: python scripts/verify_browser_schedule.py
       - name: Nondefault ports and Compose project with both browsers
         run: |
           python pipeline.py down

@@ -16,9 +16,19 @@ def unit_quote(value: str) -> str:
     return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'
 
 
+def unit_workdir(value: str) -> str:
+    # Unlike ExecStart, WorkingDirectory consumes a single raw path and does
+    # not remove surrounding quotes. Preserve internal spaces; escape % only.
+    if any(ord(character) < 32 for character in value) or value != value.strip() or value.endswith('\\'):
+        raise ValueError("Unsupported control/trailing characters in service working directory")
+    if not value.startswith("/"):
+        raise ValueError("Service working directory must be absolute")
+    return value.replace("%", "%%")
+
+
 def render(root: Path, python: Path) -> str:
     template = (ROOT / "services/systemd/pmldl-pipeline.service").read_text()
-    return (template.replace("@WORKDIR@", unit_quote(str(root.absolute())))
+    return (template.replace("@WORKDIR@", unit_workdir(str(root.absolute())))
             .replace("@PYTHON@", unit_quote(str(python.absolute())).replace('$', '$$'))
             .replace("@SCRIPT@", unit_quote(str(root.absolute() / "pipeline.py")).replace('$', '$$')))
 
